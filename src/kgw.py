@@ -1,9 +1,6 @@
-from dataclasses import dataclass
-from typing import Optional, Sequence
-
 import hashlib
-
 import torch
+from dataclasses import dataclass
 from transformers.generation.logits_process import LogitsProcessor, LogitsProcessorList
 
 from src.lm import LM
@@ -11,32 +8,55 @@ from src.lm import LM
 
 @dataclass
 class KGWConfig:
-    """Configuration for the KGW (SelfHash) watermark.
-
-    - gamma: Fraction of the vocabulary assigned to the green list per step.
-    - delta: Logit bias added to green-list tokens.
-    - hash_key: Secret integer key used to seed the per-step partition.
-    - window_size: Use the last `h` tokens of context for seeding.
-    - ignore_token_ids: Tokens that will never be boosted (e.g., special tokens).
-    """
-
-    gamma: float
-    delta: float
+    gamma: float  # Fraction of the vocabulary assigned to the green list per step.
+    delta: float  # Logit bias added to green-list tokens.
     hash_key: int
     window_size: int
-    ignore_token_ids: Optional[set[int]] = None
+    vocab_size: int
+    self_hash: bool = True
 
+
+# ---- 32-bit mix on int64 (CUDA-safe) ----
+def _mix32(x: torch.Tensor) -> torch.Tensor:
+    # x: int64 tensor (CPU or CUDA)
+    device = x.device
+    mask32 = torch.tensor(0xFFFFFFFF, dtype=torch.int64, device=device)
+    prime = torch.tensor(16777619, dtype=torch.int64, device=device)
+    h = torch.tensor(2166136261, dtype=torch.int64, device=device)
+    # FNV-1a style: XOR then multiply, masked to 32 bits
+    h = (h ^ (x & mask32)) & mask32
+    h = (h * prime) & mask32
+    # one extra round to improve diffusion
+    h = (h ^ (h >> 15)) & mask32
+    h = (h * prime) & mask32
+    return h  # int64, lower 32 bits carry the state
+
+
+def _u01_from_mix32(h: torch.Tensor) -> torch.Tensor:
+    # map 32-bit state -> [0,1)
+    return (h & 0xFFFFFFFF).to(torch.float32) / 4294967296.0
+
+
+# PRF(seed, token, key) -> u in [0,1)
+def _prf_u01_gpu(
+    seed_i64: torch.Tensor, token_i64: torch.Tensor, key_i64: torch.Tensor
+) -> torch.Tensor:
+    # all int64, broadcastable
+    h = _mix32(seed_i64 ^ key_i64)
+    h = _mix32(h ^ token_i64)
+    return _u01_from_mix32(h)
+
+def _derive_seed(key: int, tokens: list[int]) -> int:
+    payload = b""
+    payload += key.to_bytes(8, "little", signed=False)
+    for t in tokens:
+        payload += t.to_bytes(8, "little", signed=False)
+
+    hash = hashlib.sha256(payload).digest()
+
+    return int.from_bytes(hash[:4], "little", signed=False)
 
 class KGWLogitsProcessor(LogitsProcessor):
-    """
-    KGW2-SelfHash watermark logits processor.
-
-    For each decoding step and each sequence in the batch, deterministically
-    partitions the vocabulary into green/red sets via a PRF seeded by the
-    secret key and the current context. Green-list tokens receive a positive
-    logit bias `delta`.
-    """
-
     def __init__(self, config: KGWConfig) -> None:
         super().__init__()
         assert 0.0 < config.gamma <= 1.0, "gamma must be in (0, 1]"
@@ -45,119 +65,80 @@ class KGWLogitsProcessor(LogitsProcessor):
 
         self.config = config
 
-    @staticmethod
-    def _derive_seed(key: int, window: Sequence[int]) -> int:
-        """
-        Derive a 64-bit seed from key and last h tokens via SHA-256.
-
-        The `window` is the slice of the last `h` token ids (or fewer if
-        the sequence is shorter). The order matters and is included in the hash.
-        """
-        payload = key.to_bytes(8, "little", signed=False)
-        payload += int(len(window)).to_bytes(4, "little", signed=False)
-        for t in window:
-            payload += int(t).to_bytes(8, "little", signed=False)
-
-        hash = hashlib.sha256(payload).digest()
-
-        # Take the first 8 bytes as an unsigned 64-bit int
-        return int.from_bytes(hash[:8], "little", signed=False)
-
-    def _green_mask_for_batch(
+    def get_green_ids(
         self,
         input_ids: torch.LongTensor,
-        vocab_size: int,
-    ) -> torch.BoolTensor:
-        """
-        Compute a [batch, vocab] boolean mask of green tokens for this step.
+        scores: torch.FloatTensor,
+    ) -> torch.LongTensor:
+        if not self.config.self_hash:
+            h = min(self.config.window_size, input_ids.size(0))
 
-        The mask is deterministic given (key, last_token, position) per batch row.
-        """
-        batch_size = input_ids.size(0)
-        green_count = max(1, int(self.config.gamma * vocab_size))
-
-        mask = torch.zeros((batch_size, vocab_size), dtype=torch.bool)
-
-        ignore_ids: Sequence[int] = (
-            tuple(self.config.ignore_token_ids) if self.config.ignore_token_ids else ()
-        )
-
-        for i in range(batch_size):
-            # Use the last h (window_size) tokens as context hash
-            seq = input_ids[i]
-
-            h = max(0, seq.size(0) - self.config.window_size)
-            window = seq[h:].tolist()
-            seed = self._derive_seed(self.config.hash_key, window)
+            seed = _derive_seed(
+                self.config.hash_key,
+                input_ids[-h:].tolist(),
+            )
 
             gen = torch.Generator().manual_seed(seed)
-            # Random permutation to choose the green set indices deterministically
-            perm = torch.randperm(vocab_size, generator=gen)
-            chosen = perm[:green_count]
 
-            mask[i, chosen] = True
+            green_count = max(1, int(self.config.vocab_size * self.config.gamma))
+            perm = torch.randperm(self.config.vocab_size, generator=gen)
 
-            # Ensure ignored tokens are never marked green
-            mask[i, ignore_ids] = False
+            green_ids = perm[:green_count].to(input_ids.device)
+        else:
+            hash_key = torch.tensor(self.config.hash_key, dtype=torch.long)
+            candidates = scores.argsort(dim=-1, descending=True)
 
-        return mask
+            h = min(self.config.window_size, input_ids.size(0))
+            prev_tokens = input_ids[-h:]
+            prev_tokens = prev_tokens ^ hash_key
+
+            H: torch.LongTensor = _mix32(candidates[:, None] ^ prev_tokens[None, :])
+            seed = H.min(dim=1).values
+
+            u = _prf_u01_gpu(seed, candidates, hash_key)
+            u = u.to(candidates.device)
+            green_ids = candidates[u < self.config.gamma]
+
+        return green_ids
 
     def __call__(
         self,
         input_ids: torch.LongTensor,
         scores: torch.FloatTensor,
     ) -> torch.FloatTensor:
-        # scores: [batch, vocab]
-        assert scores.dim() == 2, "Expected scores to be [batch, vocab]"
-        assert input_ids.device == scores.device, (
-            "input_ids and scores must be on the same device"
-        )
-        batch, vocab_size = scores.shape
-
-        # Build green mask and add delta to green tokens
-        mask = self._green_mask_for_batch(input_ids, vocab_size).to(scores.device)
-
-        delta = torch.as_tensor(
-            self.config.delta,
-            dtype=scores.dtype,
-            device=scores.device,
-        )
-
+        batch_size = input_ids.size(0)
         scores = scores.clone()
-        scores[mask] += delta
+
+        # Process each sequence in the batch independently
+        for i in range(batch_size):
+            green_ids = self.get_green_ids(
+                input_ids[i],
+                scores[i],
+            )
+
+            scores[i, green_ids] += self.config.delta
+
         return scores
 
 
 class WatermarkedLM(LM):
-    """LM wrapper that applies KGW watermark during generation via logits processing."""
-
     def __init__(
         self,
         model_name_or_path: str,
         *,
         gamma: float = 0.5,
-        delta: float = 2.0,
+        delta: float = 2.5,
         hash_key: int = 42,
         window_size: int = 3,
-        ignore_special_tokens: bool = True,
     ) -> None:
         super().__init__(model_name_or_path)
-
-        ignore_ids: set[int] = set()
-        if ignore_special_tokens:
-            if self.tokenizer.pad_token_id is not None:
-                ignore_ids.add(int(self.tokenizer.pad_token_id))
-            if self.tokenizer.eos_token_id is not None:
-                ignore_ids.add(int(self.tokenizer.eos_token_id))
-            if self.tokenizer.bos_token_id is not None:
-                ignore_ids.add(int(self.tokenizer.bos_token_id))
 
         config = KGWConfig(
             gamma=gamma,
             delta=delta,
             hash_key=hash_key,
             window_size=window_size,
-            ignore_token_ids=ignore_ids or None,
+            vocab_size=self.tokenizer.vocab_size,
         )
 
         self.kgw = KGWLogitsProcessor(config)
@@ -169,52 +150,37 @@ class WatermarkedLM(LM):
         text: str,
         threshold: float = 2.0,  # Threshold for z-score (default is 2.0, which corresponds to a 95% confidence level)
     ) -> tuple[bool, float]:
-        """Detects the presence of a KGW watermark in the given text.
-
-        Args:
-            text (str): The text to analyze for watermark presence.
-            threshold (float): The z-score threshold above which watermark presence is confirmed.
-
-        Returns:
-            tuple[bool, float]: A tuple containing a boolean indicating watermark presence
-                               and the computed z-score.
-        """
-
-        # Tokenize without adding special tokens; we analyze the raw text tokens.
         enc = self.tokenizer(
             text,
             return_tensors="pt",
             add_special_tokens=False,
         ).to(self.model.device)
-        input_ids: torch.LongTensor = enc["input_ids"]
-        vocab_size: int = self.model.config.vocab_size
+        input_ids: torch.LongTensor = enc["input_ids"][0]
 
-        ignore_ids = self.kgw.config.ignore_token_ids or set()
         s = 0  # number of green tokens observed
-        n_eff = 0  # effective token count (excluding ignored tokens)
+        n = input_ids.size(0)
 
-        # Iterate tokens; build the green mask from previously seen tokens.
-        n_total = input_ids.size(1)
+        if n == 0:
+            return (False, 0.0)
 
-        for i in range(n_total):
-            tok_id = int(input_ids[0, i])
-            if tok_id in ignore_ids:
-                continue
+        scores: torch.FloatTensor = self.model(input_ids.unsqueeze(0)).logits[0]
 
-            mask = self.kgw._green_mask_for_batch(input_ids[:, :i], vocab_size).to(
-                input_ids.device
+        for i in range(1, n):
+            curr_input_ids = input_ids[:i]
+            curr_scores = scores[i - 1]
+            token_id = input_ids[i].item()
+
+            green_ids: torch.LongTensor = self.kgw.get_green_ids(
+                curr_input_ids,
+                curr_scores,
             )
 
             # Check if current token is in the green list
-            if mask[0, tok_id].item():
+            if token_id in green_ids.tolist():
                 s += 1
-            n_eff += 1
 
         # Formula: z = (s - n * gamma) / sqrt(n * gamma * (1 - gamma))
         gamma = self.kgw.config.gamma
-        if n_eff == 0:
-            z = 0.0
-        else:
-            z = (s - n_eff * gamma) / ((n_eff * gamma * (1 - gamma)) ** 0.5)
+        z = (s - n * gamma) / ((n * gamma * (1 - gamma)) ** 0.5)
 
         return (z > threshold, z)

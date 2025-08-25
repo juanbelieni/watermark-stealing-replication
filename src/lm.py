@@ -22,7 +22,9 @@ class LM:
         """
         # Tokenizer
         self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(
-            model_name_or_path, use_fast=True
+            model_name_or_path,
+            use_fast=True,
+            padding_side="left",
         )
 
         # Model in bfloat16
