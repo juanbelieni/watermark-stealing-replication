@@ -1,7 +1,7 @@
 from typing import List, Optional, Sequence
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizer
 from transformers.generation.logits_process import LogitsProcessorList
 
 
@@ -19,12 +19,9 @@ class LM:
     def __init__(self, model_name_or_path: str) -> None:
         """
         Initialize and load a Hugging Face causal LM on CUDA with bfloat16.
-
-        Args:
-            model_name_or_path: Any identifier resolvable by `from_pretrained`.
         """
         # Tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(
             model_name_or_path, use_fast=True
         )
 
@@ -58,7 +55,8 @@ class LM:
         repetition_penalty: float = 1.0,
         eos_token_id: Optional[int] = None,
     ) -> List[str]:
-        """Generate completions for a batch of prompts.
+        """
+        Generate completions for a batch of prompts.
 
         Returns a list of strings containing only the newly generated text
         (without the original prompt).

@@ -28,12 +28,13 @@ class KGWConfig:
 
 
 class KGWLogitsProcessor(LogitsProcessor):
-    """KGW/SelfHash watermark logits processor.
+    """
+    KGW2-SelfHash watermark logits processor.
 
     For each decoding step and each sequence in the batch, deterministically
     partitions the vocabulary into green/red sets via a PRF seeded by the
-    secret key and the current context (last token id and position). Green-list
-    tokens receive a positive logit bias `delta`.
+    secret key and the current context. Green-list tokens receive a positive
+    logit bias `delta`.
     """
 
     def __init__(self, config: KGWConfig) -> None:
@@ -46,7 +47,8 @@ class KGWLogitsProcessor(LogitsProcessor):
 
     @staticmethod
     def _derive_seed(key: int, window: Sequence[int]) -> int:
-        """Derive a 64-bit seed from key and last h tokens via SHA-256.
+        """
+        Derive a 64-bit seed from key and last h tokens via SHA-256.
 
         The `window` is the slice of the last `h` token ids (or fewer if
         the sequence is shorter). The order matters and is included in the hash.
@@ -66,7 +68,8 @@ class KGWLogitsProcessor(LogitsProcessor):
         input_ids: torch.LongTensor,
         vocab_size: int,
     ) -> torch.BoolTensor:
-        """Compute a [batch, vocab] boolean mask of green tokens for this step.
+        """
+        Compute a [batch, vocab] boolean mask of green tokens for this step.
 
         The mask is deterministic given (key, last_token, position) per batch row.
         """
