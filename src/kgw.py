@@ -46,15 +46,18 @@ def _prf_u01_gpu(
     h = _mix32(h ^ token_i64)
     return _u01_from_mix32(h)
 
-def _derive_seed(key: int, tokens: list[int]) -> int:
-    payload = b""
-    payload += key.to_bytes(8, "little", signed=False)
-    for t in tokens:
-        payload += t.to_bytes(8, "little", signed=False)
 
+def _derive_seed(key: int, tokens: list[int]) -> int:
+    token_hashes = [
+        hashlib.sha256(t.to_bytes(8, "little", signed=False)).digest() for t in tokens
+    ]
+
+    token_hash = min(token_hashes)
+    payload = token_hash + key.to_bytes(8, "little", signed=False)
     hash = hashlib.sha256(payload).digest()
 
     return int.from_bytes(hash[:4], "little", signed=False)
+
 
 class KGWLogitsProcessor(LogitsProcessor):
     def __init__(self, config: KGWConfig) -> None:
@@ -92,8 +95,8 @@ class KGWLogitsProcessor(LogitsProcessor):
             prev_tokens = input_ids[-h:]
             prev_tokens = prev_tokens ^ hash_key
 
-            H: torch.LongTensor = _mix32(candidates[:, None] ^ prev_tokens[None, :])
-            seed = H.min(dim=1).values
+            prev_tokens_hash = _mix32(prev_tokens[None, :]).min(dim=1).values
+            seed = _mix32(prev_tokens_hash ^ candidates)
 
             u = _prf_u01_gpu(seed, candidates, hash_key)
             u = u.to(candidates.device)

@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """
 Generate a dataset of samples on the TRL UltraFeedback prompts (test split),
-both watermarked and not-watermarked (plain).
+both watermarked and not-watermarked (base), and emit a JSON file per mode
+with all generated samples alongside the generation and watermark
+configuration. Filenames include a timestamp.
 
 Features
-- Selects the first 1000 prompts from `trl-lib/ultrafeedback-prompt` test split
-- Generates 10 sampled completions per prompt
-- Saves CSV rows as: prompt,completion
-- Resumable: if stopped, re-run continues from where it left off by reading the
-  existing CSV and only generating the missing completions per prompt.
+- Selects the first `args.limit` prompts from `trl-lib/ultrafeedback-prompt` test split
+- Generates `args.per_prompt` sampled completions per prompt
+- Outputs one JSON per mode with:
+  - run metadata (dataset, model, timestamp)
+  - generation params
+  - watermark params (if applicable)
+  - samples: for each prompt, a list of completions
 
 Usage examples
 - python scripts/generate_samples.py --mode both
-- python scripts/generate_samples.py --mode plain --limit 200
+- python scripts/generate_samples.py --mode base --limit 200
 
 Environment
 - This script expects access to a GPU by default (see src/lm.py). Ensure your
@@ -21,8 +25,9 @@ Environment
 """
 
 import argparse
-import pandas as pd
-from collections import Counter
+import json
+from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from datasets import load_dataset
 from tqdm import tqdm
@@ -33,39 +38,30 @@ from src.kgw import WatermarkedLM
 DATASET_ID = "trl-lib/ultrafeedback-prompt"
 DEFAULT_MODEL = "meta-llama/Llama-3.2-3B-Instruct"
 
+
 def generate_for_mode(
     mode: str,
     model_name: str,
     prompts: list[str],
-    out_csv: Path,
     per_prompt: int,
     max_new_tokens: int,
     temperature: float,
-    top_p: float,
-    top_k: int,
-    repetition_penalty: float,
-) -> None:
-    print(f"Generating {mode} samples to {out_csv}...")
-
-    if out_csv.exists():
-        df = pd.read_csv(out_csv)
-        counts = Counter(df["prompt"].to_list())
-    else:
-        counts = Counter()
+) -> tuple[list, dict | None]:
+    print(f"Generating {mode} samples...")
 
     if mode == "watermarked":
         lm = WatermarkedLM(model_name)
-    elif mode == "plain":
+        watermark_config = asdict(lm.kgw.config)
+    elif mode == "base":
         lm = LM(model_name)
+        watermark_config = None
     else:
-        raise ValueError("mode must be 'watermarked' or 'plain'")
+        raise ValueError("mode must be 'watermarked' or 'base'")
 
+    samples: list[dict] = []
 
     for prompt in tqdm(prompts):
-        done = counts.get(prompt, 0)
-        remaining = per_prompt - done
-        if remaining <= 0:
-            continue
+        remaining = per_prompt
 
         # Generate remaining completions for this prompt
         templated_prompt = lm.tokenizer.apply_chat_template(
@@ -78,20 +74,16 @@ def generate_for_mode(
             batch_prompts,
             max_new_tokens=max_new_tokens,
             temperature=temperature,
-            top_p=top_p,
-            top_k=top_k,
-            repetition_penalty=repetition_penalty,
         )
 
-        # Append to CSV
-        new_rows = [(prompt, comp) for comp in completions]
-        new_df = pd.DataFrame(new_rows, columns=["prompt", "completion"])
-        if out_csv.exists():
-            new_df.to_csv(out_csv, mode="a", header=False, index=False)
-        else:
-            new_df.to_csv(out_csv, index=False)
+        samples.append(
+            {
+                "prompt": prompt,
+                "completions": completions,
+            }
+        )
 
-    del lm
+    return samples, watermark_config
 
 
 if __name__ == "__main__":
@@ -105,14 +97,14 @@ if __name__ == "__main__":
     ap.add_argument(
         "--mode",
         type=str,
-        choices=["plain", "watermarked", "both"],
+        choices=["base", "watermarked", "both"],
         default="both",
-        help="Generation mode: plain, watermarked, or both",
+        help="Generation mode: base, watermarked, or both",
     )
     ap.add_argument(
         "--limit",
         type=int,
-        default=1000,
+        default=1500,
         help="Number of prompts from test split to use.",
     )
     ap.add_argument(
@@ -124,7 +116,7 @@ if __name__ == "__main__":
     ap.add_argument(
         "--max-new-tokens",
         type=int,
-        default=200,
+        default=800,
         help="Max new tokens per completion.",
     )
     ap.add_argument(
@@ -134,28 +126,10 @@ if __name__ == "__main__":
         help="Sampling temperature.",
     )
     ap.add_argument(
-        "--top-p",
-        type=float,
-        default=0.95,
-        help="Nucleus sampling p.",
-    )
-    ap.add_argument(
-        "--top-k",
-        type=int,
-        default=0,
-        help="Top-k sampling (0 to disable)",
-    )
-    ap.add_argument(
-        "--repetition-penalty",
-        type=float,
-        default=1.0,
-        help="Repetition penalty",
-    )
-    ap.add_argument(
         "--out-dir",
         type=Path,
         default=Path("data"),
-        help="Directory to write CSVs",
+        help="Directory to write output JSON files.",
     )
     args = ap.parse_args()
 
@@ -166,38 +140,77 @@ if __name__ == "__main__":
     prompts = [prompt[0]["content"] for prompt in ds["prompt"]]
     print(f"Loaded {len(prompts)} prompts.")
 
-    # Filenames include mode for clarity
+    # Filenames include model for clarity
     model_name_sanitized = args.model.replace("/", "_").replace("-", "_").lower()
     base_name = f"samples_{model_name_sanitized}"
-    plain_csv = args.out_dir / f"{base_name}_plain.csv"
-    wm_csv = args.out_dir / f"{base_name}_watermarked.csv"
+    # Timestamp for filenames and metadata
+    ts_file = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts_iso = datetime.now(timezone.utc).isoformat() + "Z"
 
-    if args.mode in ("plain", "both"):
-        generate_for_mode(
-            mode="plain",
+    if args.mode in ("base", "both"):
+        samples, _ = generate_for_mode(
+            mode="base",
             model_name=args.model,
             prompts=prompts,
-            out_csv=plain_csv,
             per_prompt=args.per_prompt,
             max_new_tokens=args.max_new_tokens,
             temperature=args.temperature,
-            top_p=args.top_p,
-            top_k=args.top_k,
-            repetition_penalty=args.repetition_penalty,
         )
 
+        output = {
+            "dataset_id": DATASET_ID,
+            "split": "test",
+            "limit": args.limit,
+            "model": args.model,
+            "timestamp": ts_iso,
+            "mode": "base",
+            "generation_params": {
+                "per_prompt": args.per_prompt,
+                "max_new_tokens": args.max_new_tokens,
+                "temperature": args.temperature,
+            },
+            "samples": samples,
+        }
+
+        base_path = args.out_dir / f"{base_name}_base_{ts_file}.json"
+
+        with open(base_path, "w", encoding="utf-8") as f:
+            json.dump(output, f, ensure_ascii=False, indent=2)
+
+        print(f"Wrote base samples to {base_path}")
+
     if args.mode in ("watermarked", "both"):
-        generate_for_mode(
+        samples, watermark_config = generate_for_mode(
             mode="watermarked",
             model_name=args.model,
             prompts=prompts,
-            out_csv=wm_csv,
             per_prompt=args.per_prompt,
             max_new_tokens=args.max_new_tokens,
             temperature=args.temperature,
-            top_p=args.top_p,
-            top_k=args.top_k,
-            repetition_penalty=args.repetition_penalty,
         )
+
+        output = {
+            "dataset_id": DATASET_ID,
+            "split": "test",
+            "limit": args.limit,
+            "model": args.model,
+            "timestamp": ts_iso,
+            "mode": "watermarked",
+            "generation_params": {
+                "per_prompt": args.per_prompt,
+                "max_new_tokens": args.max_new_tokens,
+                "temperature": args.temperature,
+            },
+            "samples": samples,
+        }
+
+        output["watermark_params"] = watermark_config
+
+        wm_path = args.out_dir / f"{base_name}_watermarked_{ts_file}.json"
+
+        with open(wm_path, "w", encoding="utf-8") as f:
+            json.dump(output, f, ensure_ascii=False, indent=2)
+
+        print(f"Wrote watermarked samples to {wm_path}")
 
     print("Done.")

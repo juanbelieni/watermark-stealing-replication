@@ -43,10 +43,10 @@ if __name__ == "__main__":
         for p in raw_prompts
     ]
 
-    # Generate plain (unwatermarked) completions by temporarily disabling the logits processor
+    # Generate base (unwatermarked) completions by temporarily disabling the logits processor
     original_processor = lm.logits_processor
     lm.logits_processor = None
-    plain_samples = lm.generate(
+    base_samples = lm.generate(
         templated_prompts,
         max_new_tokens=MAX_NEW_TOKENS,
     )
@@ -58,14 +58,14 @@ if __name__ == "__main__":
         max_new_tokens=MAX_NEW_TOKENS,
     )
 
-    assert len(plain_samples) >= 10 and len(watermarked_samples) >= 10
+    assert len(base_samples) >= 10 and len(watermarked_samples) >= 10
 
-    # Detect on plain completions (expect False)
-    plain_flags = []
-    for i, text in enumerate(plain_samples):
+    # Detect on base completions (expect False)
+    base_flags = []
+    for i, text in enumerate(base_samples):
         is_wm, z = lm.detect_watermark(text)
-        plain_flags.append(is_wm)
-        print(f"[PLAIN {i:02d}] z={z:.2f} flagged={is_wm}")
+        base_flags.append(is_wm)
+        print(f"[BASE {i:02d}] z={z:.2f} flagged={is_wm}")
 
     # Detect on watermarked completions (expect True)
     wm_flags = []
@@ -75,6 +75,6 @@ if __name__ == "__main__":
         print(f"[WATERMARKED {i:02d}] z={z:.2f} flagged={is_wm}")
 
     assert all(wm_flags), "Expected all watermarked generations to be detected"
-    assert not all(plain_flags), "Expected some plain generations to not be detected"
+    assert not all(base_flags), "Expected some base generations to not be detected"
 
     print("All watermark detection assertions passed.")
