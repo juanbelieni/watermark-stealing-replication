@@ -16,7 +16,7 @@ class LM:
     completion strings (prompt stripped).
     """
 
-    def __init__(self, model_name_or_path: str) -> None:
+    def __init__(self, model_name_or_path: str, device: str = "auto") -> None:
         """
         Initialize and load a Hugging Face causal LM on CUDA with bfloat16.
         """
@@ -31,7 +31,7 @@ class LM:
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name_or_path,
             torch_dtype=torch.bfloat16,
-            device_map="auto",
+            device_map=device,
             attn_implementation="flash_attention_2",
         )
         self.model.eval()

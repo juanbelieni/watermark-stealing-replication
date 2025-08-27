@@ -48,11 +48,12 @@ def generate_for_mode(
     max_new_tokens: int,
     temperature: float,
     self_hash: bool,
+    device: str,
 ) -> tuple[list, dict | None]:
     print(f"Generating {mode} samples...")
 
     if mode == "watermarked":
-        lm = WatermarkedLM(model_name, self_hash=self_hash, delta=2.5)
+        lm = WatermarkedLM(model_name, self_hash=self_hash, delta=2.5, device=device)
         watermark_config = asdict(lm.kgw.config)
     elif mode == "base":
         lm = LM(model_name)
@@ -176,6 +177,7 @@ if __name__ == "__main__":
                 max_new_tokens=args.max_new_tokens,
                 temperature=args.temperature,
                 self_hash=args.self_hash,
+                device=args.device,
             )
 
         output = {
@@ -210,6 +212,7 @@ if __name__ == "__main__":
                 max_new_tokens=args.max_new_tokens,
                 temperature=args.temperature,
                 self_hash=args.self_hash,
+                device=args.device,
             )
 
         output = {

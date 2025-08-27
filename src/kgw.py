@@ -134,8 +134,9 @@ class WatermarkedLM(LM):
         hash_key: int = 42,
         window_size: int = 3,
         self_hash: bool = True,
+        device: str = "auto",
     ) -> None:
-        super().__init__(model_name_or_path)
+        super().__init__(model_name_or_path, device)
 
         config = KGWConfig(
             gamma=gamma,
