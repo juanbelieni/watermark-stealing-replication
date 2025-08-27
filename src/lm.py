@@ -31,7 +31,8 @@ class LM:
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name_or_path,
             torch_dtype=torch.bfloat16,
-            device_map=torch.device("cuda"),
+            device_map="auto",
+            attn_implementation="flash_attention_2",
         )
         self.model.eval()
 

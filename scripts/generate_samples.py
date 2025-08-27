@@ -47,11 +47,12 @@ def generate_for_mode(
     per_prompt: int,
     max_new_tokens: int,
     temperature: float,
+    self_hash: bool,
 ) -> tuple[list, dict | None]:
     print(f"Generating {mode} samples...")
 
     if mode == "watermarked":
-        lm = WatermarkedLM(model_name, self_hash=False)
+        lm = WatermarkedLM(model_name, self_hash=self_hash, delta=2.5)
         watermark_config = asdict(lm.kgw.config)
     elif mode == "base":
         lm = LM(model_name)
@@ -114,13 +115,13 @@ if __name__ == "__main__":
         help="Number of prompts from train split to use.",
     )
     ap.add_argument(
-        "--per-prompt",
+        "--per_prompt",
         type=int,
         default=3,
         help="Number of completions per prompt.",
     )
     ap.add_argument(
-        "--max-new-tokens",
+        "--max_new_tokens",
         type=int,
         default=500,
         help="Max new tokens per completion.",
@@ -132,10 +133,22 @@ if __name__ == "__main__":
         help="Sampling temperature.",
     )
     ap.add_argument(
-        "--out-dir",
+        "--self_hash",
+        action="store_true",
+        default=False,
+        help="If set, use self-hashing watermarking"
+    )
+    ap.add_argument(
+        "--out_dir",
         type=Path,
         default=Path("data"),
         help="Directory to write output JSON files.",
+    )
+    ap.add_argument(
+        "--device",
+        type=str,
+        default="cuda" if torch.cuda.is_available() else "cpu",
+        help="Device to run the model on.",
     )
     args = ap.parse_args()
 
@@ -154,14 +167,16 @@ if __name__ == "__main__":
     ts_iso = datetime.now(timezone.utc).isoformat() + "Z"
 
     if args.mode in ("base", "both"):
-        samples, _ = generate_for_mode(
-            mode="base",
-            model_name=args.model,
-            prompts=prompts,
-            per_prompt=args.per_prompt,
-            max_new_tokens=args.max_new_tokens,
-            temperature=args.temperature,
-        )
+        with torch.device(args.device):
+            samples, _ = generate_for_mode(
+                mode="base",
+                model_name=args.model,
+                prompts=prompts,
+                per_prompt=args.per_prompt,
+                max_new_tokens=args.max_new_tokens,
+                temperature=args.temperature,
+                self_hash=args.self_hash,
+            )
 
         output = {
             "dataset_id": DATASET_ID,
@@ -186,14 +201,16 @@ if __name__ == "__main__":
         print(f"Wrote base samples to {base_path}")
 
     if args.mode in ("watermarked", "both"):
-        samples, watermark_config = generate_for_mode(
-            mode="watermarked",
-            model_name=args.model,
-            prompts=prompts,
-            per_prompt=args.per_prompt,
-            max_new_tokens=args.max_new_tokens,
-            temperature=args.temperature,
-        )
+        with torch.device(args.device):
+            samples, watermark_config = generate_for_mode(
+                mode="watermarked",
+                model_name=args.model,
+                prompts=prompts,
+                per_prompt=args.per_prompt,
+                max_new_tokens=args.max_new_tokens,
+                temperature=args.temperature,
+                self_hash=args.self_hash,
+            )
 
         output = {
             "dataset_id": DATASET_ID,
