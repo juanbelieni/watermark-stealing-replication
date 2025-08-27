@@ -13,7 +13,7 @@ class KGWConfig:
     hash_key: int
     window_size: int
     vocab_size: int
-    self_hash: bool = True
+    self_hash: bool
 
 
 # ---- 32-bit mix on int64 (CUDA-safe) ----
@@ -130,9 +130,10 @@ class WatermarkedLM(LM):
         model_name_or_path: str,
         *,
         gamma: float = 0.5,
-        delta: float = 2.5,
+        delta: float = 2.0,
         hash_key: int = 42,
         window_size: int = 3,
+        self_hash: bool = True,
     ) -> None:
         super().__init__(model_name_or_path)
 
@@ -142,6 +143,7 @@ class WatermarkedLM(LM):
             hash_key=hash_key,
             window_size=window_size,
             vocab_size=self.tokenizer.vocab_size,
+            self_hash=self_hash,
         )
 
         self.kgw = KGWLogitsProcessor(config)
@@ -185,5 +187,7 @@ class WatermarkedLM(LM):
         # Formula: z = (s - n * gamma) / sqrt(n * gamma * (1 - gamma))
         gamma = self.kgw.config.gamma
         z = (s - n * gamma) / ((n * gamma * (1 - gamma)) ** 0.5)
+
+        # print(f"Detected {s} green tokens out of {n} total tokens. z = {z:.2f}")
 
         return (z > threshold, z)

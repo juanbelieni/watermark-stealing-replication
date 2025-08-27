@@ -6,7 +6,7 @@ with all generated samples alongside the generation and watermark
 configuration. Filenames include a timestamp.
 
 Features
-- Selects the first `args.limit` prompts from `trl-lib/ultrafeedback-prompt` test split
+- Selects the first `args.limit` prompts from `trl-lib/ultrafeedback-prompt` train split
 - Generates `args.per_prompt` sampled completions per prompt
 - Outputs one JSON per mode with:
   - run metadata (dataset, model, timestamp)
@@ -26,6 +26,7 @@ Environment
 
 import argparse
 import json
+import torch
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,7 +37,7 @@ from src.lm import LM
 from src.kgw import WatermarkedLM
 
 DATASET_ID = "trl-lib/ultrafeedback-prompt"
-DEFAULT_MODEL = "meta-llama/Llama-3.2-3B-Instruct"
+MODEL_ID = "meta-llama/Llama-3.2-3B-Instruct"
 
 
 def generate_for_mode(
@@ -50,7 +51,7 @@ def generate_for_mode(
     print(f"Generating {mode} samples...")
 
     if mode == "watermarked":
-        lm = WatermarkedLM(model_name)
+        lm = WatermarkedLM(model_name, self_hash=False)
         watermark_config = asdict(lm.kgw.config)
     elif mode == "base":
         lm = LM(model_name)
@@ -60,28 +61,33 @@ def generate_for_mode(
 
     samples: list[dict] = []
 
-    for prompt in tqdm(prompts):
-        remaining = per_prompt
+    dataloader = torch.utils.data.DataLoader(
+        prompts,
+        batch_size=4,
+    )
 
+    for batch in tqdm(dataloader):
         # Generate remaining completions for this prompt
-        templated_prompt = lm.tokenizer.apply_chat_template(
-            [{"role": "user", "content": prompt}],
+        batch_prompts = lm.tokenizer.apply_chat_template(
+            [
+                [{"role": "user", "content": prompt}]
+                for prompt in batch
+                for _ in range(per_prompt)
+            ],
             add_generation_prompt=True,
             tokenize=False,
         )
-        batch_prompts = [templated_prompt] * remaining
+
         completions = lm.generate(
             batch_prompts,
             max_new_tokens=max_new_tokens,
             temperature=temperature,
         )
 
-        samples.append(
-            {
-                "prompt": prompt,
-                "completions": completions,
-            }
-        )
+        # Group completions by prompt
+        for i, prompt in enumerate(batch):
+            prompt_completions = completions[i * per_prompt : (i + 1) * per_prompt]
+            samples.append({"prompt": prompt, "completions": prompt_completions})
 
     return samples, watermark_config
 
@@ -91,7 +97,7 @@ if __name__ == "__main__":
     ap.add_argument(
         "--model",
         type=str,
-        default=DEFAULT_MODEL,
+        default=MODEL_ID,
         help="HF model id or path.",
     )
     ap.add_argument(
@@ -104,19 +110,19 @@ if __name__ == "__main__":
     ap.add_argument(
         "--limit",
         type=int,
-        default=1500,
-        help="Number of prompts from test split to use.",
+        default=10000,
+        help="Number of prompts from train split to use.",
     )
     ap.add_argument(
         "--per-prompt",
         type=int,
-        default=10,
+        default=3,
         help="Number of completions per prompt.",
     )
     ap.add_argument(
         "--max-new-tokens",
         type=int,
-        default=800,
+        default=500,
         help="Max new tokens per completion.",
     )
     ap.add_argument(
@@ -135,8 +141,8 @@ if __name__ == "__main__":
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Loading dataset: {DATASET_ID} [test split]")
-    ds = load_dataset(DATASET_ID, split="test").select(range(args.limit))
+    print(f"Loading dataset: {DATASET_ID} [train split]")
+    ds = load_dataset(DATASET_ID, split="train").select(range(args.limit))
     prompts = [prompt[0]["content"] for prompt in ds["prompt"]]
     print(f"Loaded {len(prompts)} prompts.")
 

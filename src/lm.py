@@ -103,19 +103,17 @@ class LM:
             logits_processor=self.logits_processor,
         )
 
-        # Slice off the prompts to return only newly generated text
-        prompt_lengths = attention_mask.sum(dim=1).tolist()
+        # Slice off the prompts using the batch max prompt length (left padding)
+        # With left padding, HF generation appends tokens after the shared
+        # batch input width. The start index is thus identical for all rows.
+        prompt_length = input_ids.shape[1]
         completions: List[str] = []
         gen_ids = gen_ids.detach().cpu()
-        for i, start in enumerate(prompt_lengths):
+
+        for i in range(gen_ids.shape[0]):
             seq = gen_ids[i].tolist()
-            gen_tokens = seq[int(start) :]
-            if effective_eos is not None and effective_eos in gen_tokens:
-                eos_pos = gen_tokens.index(effective_eos)
-                gen_tokens = gen_tokens[:eos_pos]
-            text = self.tokenizer.decode(
-                gen_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=True
-            )
+            gen_tokens = seq[prompt_length:]
+            text = self.tokenizer.decode(gen_tokens, skip_special_tokens=True)
             completions.append(text)
 
         return completions
