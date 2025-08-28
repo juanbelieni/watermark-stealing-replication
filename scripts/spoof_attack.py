@@ -224,7 +224,7 @@ class AttackLM(LM):
 def build_prompts(n: int) -> list[str]:
     from datasets import load_dataset
 
-    ds = load_dataset("trl-lib/ultrafeedback-prompt", split="train").select(range(n))
+    ds = load_dataset("trl-lib/ultrafeedback-prompt", split="test").select(range(n))
     return [d[0]["content"] for d in ds["prompt"]]
 
 
