@@ -65,7 +65,7 @@ def generate_for_mode(
 
     dataloader = torch.utils.data.DataLoader(
         prompts,
-        batch_size=4,
+        batch_size=8,
     )
 
     for batch in tqdm(dataloader):

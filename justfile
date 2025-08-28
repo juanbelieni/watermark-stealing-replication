@@ -9,4 +9,3 @@ generate_samples_wm:
 
 generate_samples_wm_sh:
   uv run python -m scripts.generate_samples --mode=watermarked --self_hash
-

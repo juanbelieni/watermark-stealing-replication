@@ -81,12 +81,12 @@ class KGWLogitsProcessor(LogitsProcessor):
                 input_ids[-h:].tolist(),
             )
 
-            gen = torch.Generator().manual_seed(seed)
+            gen = torch.Generator(device=input_ids.device).manual_seed(seed)
 
             green_count = max(1, int(self.config.vocab_size * self.config.gamma))
-            perm = torch.randperm(self.config.vocab_size, generator=gen)
+            perm = torch.randperm(self.config.vocab_size, generator=gen, device=input_ids.device)
 
-            green_ids = perm[:green_count].to(input_ids.device)
+            green_ids = perm[:green_count]
         else:
             hash_key = torch.tensor(self.config.hash_key, dtype=torch.long)
             candidates = scores.argsort(dim=-1, descending=True)

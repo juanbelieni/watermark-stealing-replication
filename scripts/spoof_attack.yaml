@@ -1,0 +1,24 @@
+program: scripts/spoof_attack.py
+method: grid
+name: spoof_attack_grid
+project: watermark-spoof
+metric:
+  name: success_rate
+  goal: maximize
+parameters:
+  delta_att:
+    values: [2.5, 5, 7.5, 10]
+  limit_samples:
+    values: [100, 500, 1000, 2000, 4000, 6000, 8000, 10000]
+  seed:
+    values: [0, 1, 2, 3, 4]
+
+# Ensure args are passed to the script
+command:
+  - ${env}
+  - uv
+  - run
+  - python
+  - -m
+  - scripts.spoof_attack
+  - ${args}
