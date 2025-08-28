@@ -1,6 +1,9 @@
 test:
   uv run python -m scripts.test_watermark
 
+web:
+  uv run streamlit run web/app.py
+
 generate_samples_base:
   uv run python -m scripts.generate_samples --mode=base
 
