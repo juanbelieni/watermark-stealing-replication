@@ -30,7 +30,7 @@ def build_prompts(n: int) -> list[str]:
 
 
 if __name__ == "__main__":
-    lm = WatermarkedLM(MODEL_ID)
+    lm = WatermarkedLM(MODEL_ID, self_hash=False, window_size=2, delta=2.5)
 
     # Prepare templated prompts for chat-style models
     raw_prompts = build_prompts(NUM_PROMPTS)

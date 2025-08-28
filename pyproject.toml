@@ -13,4 +13,8 @@ dependencies = [
     "pandas>=2.3.2",
     "tqdm>=4.67.1",
     "streamlit>=1.48.1",
+    "flash-attn>=2.8.3",
+    "wandb>=0.21.1",
+    "altair>=5.5.0",
+    "polars>=1.32.3",
 ]

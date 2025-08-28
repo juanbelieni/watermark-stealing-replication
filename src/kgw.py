@@ -13,7 +13,7 @@ class KGWConfig:
     hash_key: int
     window_size: int
     vocab_size: int
-    self_hash: bool = True
+    self_hash: bool
 
 
 # ---- 32-bit mix on int64 (CUDA-safe) ----
@@ -81,12 +81,12 @@ class KGWLogitsProcessor(LogitsProcessor):
                 input_ids[-h:].tolist(),
             )
 
-            gen = torch.Generator().manual_seed(seed)
+            gen = torch.Generator(device=input_ids.device).manual_seed(seed)
 
             green_count = max(1, int(self.config.vocab_size * self.config.gamma))
-            perm = torch.randperm(self.config.vocab_size, generator=gen)
+            perm = torch.randperm(self.config.vocab_size, generator=gen, device=input_ids.device)
 
-            green_ids = perm[:green_count].to(input_ids.device)
+            green_ids = perm[:green_count]
         else:
             hash_key = torch.tensor(self.config.hash_key, dtype=torch.long)
             candidates = scores.argsort(dim=-1, descending=True)
@@ -130,11 +130,13 @@ class WatermarkedLM(LM):
         model_name_or_path: str,
         *,
         gamma: float = 0.5,
-        delta: float = 2.5,
+        delta: float = 2.0,
         hash_key: int = 42,
         window_size: int = 3,
+        self_hash: bool = True,
+        device: str = "auto",
     ) -> None:
-        super().__init__(model_name_or_path)
+        super().__init__(model_name_or_path, device)
 
         config = KGWConfig(
             gamma=gamma,
@@ -142,6 +144,7 @@ class WatermarkedLM(LM):
             hash_key=hash_key,
             window_size=window_size,
             vocab_size=self.tokenizer.vocab_size,
+            self_hash=self_hash,
         )
 
         self.kgw = KGWLogitsProcessor(config)
@@ -185,5 +188,7 @@ class WatermarkedLM(LM):
         # Formula: z = (s - n * gamma) / sqrt(n * gamma * (1 - gamma))
         gamma = self.kgw.config.gamma
         z = (s - n * gamma) / ((n * gamma * (1 - gamma)) ** 0.5)
+
+        # print(f"Detected {s} green tokens out of {n} total tokens. z = {z:.2f}")
 
         return (z > threshold, z)
