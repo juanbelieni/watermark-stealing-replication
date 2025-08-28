@@ -1,15 +1,19 @@
-import streamlit as st
 import math
 import random
 import hashlib
+import json
+import os
 import pandas as pd
+import altair as alt
+import numpy as np
+import streamlit as st
 
 st.title("Watermark Stealing Replication")
 st.write("Juan Belieni @ AI Security Bootcamp")
 
 
-watermark_tab, watermark_stealing_tab, replication_tab = st.tabs(
-    ["Watermark", "Watermark Stealing", "Replication"]
+watermark_tab, watermark_stealing_tab, replication_tab, reflection_tab = st.tabs(
+    ["Watermark", "Watermark Stealing", "Spoof Attack Replication", "Reflection"]
 )
 
 with watermark_tab:
@@ -92,10 +96,6 @@ with watermark_tab:
     st.subheader("Simulation")
     st.caption("Assume fixed length n = 100 tokens (word‑tokenized lorem ipsum).")
 
-    import math
-    import random
-    import pandas as pd
-    import altair as alt
 
     n_fixed = 100
     gamma = st.slider("Green rate γ", 0.00, 1.0, 0.5, step=0.05)
@@ -108,13 +108,7 @@ with watermark_tab:
     def normal_pdf(z: float) -> float:
         return (1.0 / math.sqrt(2.0 * math.pi)) * math.exp(-0.5 * z * z)
 
-    def normal_sf(z: float) -> float:
-        return 0.5 * math.erfc(z / math.sqrt(2.0))
-
-    alpha = normal_sf(z_obs)
-
-    st.metric("Observed z", f"{z_obs:.2f}")
-    st.write(f"Approx. one‑sided FPR α ≈ {alpha:.2e}")
+    st.metric("Observed z-score", f"{z_obs:.2f}")
 
     if "green_seed" not in st.session_state:
         st.session_state.green_seed = 42
@@ -199,9 +193,9 @@ with watermark_tab:
         """
 # Generation (with secret key K)
 for t in 1..n:
-    seed = PRF(K, context_{<t})                # derive per-step seed
+    seed = PRF(K, context[:t])                # derive per-step seed
     G_t  = sample_greenlist(V, seed, rate=gamma)
-    logits = model(context_{<t})
+    logits = model(context[:t])
     logits[i in G_t] += delta                   # bias green tokens
     x_t = sample_softmax(logits)
     append x_t to context
@@ -221,7 +215,7 @@ for t in 1..n:
 # Verification (given text x_1..x_n and key K)
 z = 0; s = 0
 for t in 1..n:
-    seed = PRF(K, context_{<t})
+    seed = PRF(K, context[:t])
     G_t  = sample_greenlist(V, seed, rate=gamma)
     s   += indicator(x_t in G_t)
 z = (s - gamma*n) / sqrt(n*gamma*(1-gamma))
@@ -364,9 +358,9 @@ with watermark_stealing_tab:
             """
 # Spoofing with surrogate s
 for t in 1..n:
-    logits = base_model(context_{<t})
+    logits = base_model(context[:t])
     for token in top_k(vocab):
-        logits[token] += lambda_bias * s(context_{<t}, token)
+        logits[token] += delta * s(context[:t], token)
     x_t = sample_softmax(logits)
     append x_t to context
             """,
@@ -385,9 +379,9 @@ for t in 1..n:
             """
 # Scrubbing guided by surrogate s
 for t in 1..n:
-    logits = paraphraser(context_{<t})
+    logits = paraphraser(context[:t])
     for token in top_k(vocab):
-        logits[token] -= lambda_bias * s(context_{<t}, token)
+        logits[token] -= delta * s(context[:t], token)
     y_t = sample_softmax(logits)
     append y_t to context
             """,
@@ -396,10 +390,12 @@ for t in 1..n:
 
     # Interactive: Spoof Attack Simulation
     st.subheader("Simulation of Spoof Attack")
-    st.caption("Move λ to see tokens shift toward detector‑green. Only λ is adjustable.")
+    st.caption(
+        "Move δ to see tokens shift toward detector‑green. Only δ is adjustable."
+    )
 
-    # --- Controls (only λ)
-    lambda_bias = st.slider("Attack bias λ", 0.0, 4.0, 0.0, step=0.1)
+    # --- Controls (only δ)
+    delta_bias = st.slider("Attack bias δ", 0.0, 4.0, 0.0, step=0.1)
 
     # Fixed settings for clarity
     sim_len = 100
@@ -450,7 +446,9 @@ for t in 1..n:
         k = max(1, int(round(gamma_sim * len(vocab))))
         return set(rnd.sample(vocab, k))
 
-    def watermarked_pmf(pb: dict[str, float], G_t: set[str], delta_w: float = 2.0) -> dict[str, float]:
+    def watermarked_pmf(
+        pb: dict[str, float], G_t: set[str], delta_w: float = 2.0
+    ) -> dict[str, float]:
         logits = {}
         for w, p in pb.items():
             logit = math.log(p)
@@ -462,7 +460,9 @@ for t in 1..n:
         Z = sum(exps.values())
         return {w: exps[w] / Z for w in vocab}
 
-    def scorer_s(pb: dict[str, float], pw: dict[str, float], c: float) -> dict[str, float]:
+    def scorer_s(
+        pb: dict[str, float], pw: dict[str, float], c: float
+    ) -> dict[str, float]:
         s = {}
         eps = 1e-12
         for w in vocab:
@@ -470,7 +470,7 @@ for t in 1..n:
             s[w] = (1.0 / c) * min(ratio, c) if ratio >= 1.0 else 0.0
         return s
 
-    def decode(lambda_bias: float, n: int, seed: int, prompt_tokens: list[str]):
+    def decode(delta_bias: float, n: int, seed: int, prompt_tokens: list[str]):
         rng = random.Random(seed)
         ctx = list(prompt_tokens)
         emitted = []
@@ -482,7 +482,7 @@ for t in 1..n:
             Gt = greenlist(last, t)
             pw = watermarked_pmf(pb, Gt)
             s_map = scorer_s(pb, pw, clip_c)
-            logits = {w: math.log(pb[w]) + lambda_bias * s_map[w] for w in vocab}
+            logits = {w: math.log(pb[w]) + delta_bias * s_map[w] for w in vocab}
             m = max(logits.values())
             exps = {w: math.exp(v - m) for w, v in logits.items()}
             Z = sum(exps.values())
@@ -506,14 +506,14 @@ for t in 1..n:
     rnd = random.Random(base_seed)
     prompt_tokens = [rnd.choice(vocab) for _ in range(3)]
 
-    tokens, greens, s_count = decode(lambda_bias, sim_len, base_seed, prompt_tokens)
+    tokens, greens, s_count = decode(delta_bias, sim_len, base_seed, prompt_tokens)
 
-    # Show detected z-score (one-sided test baseline γ = 0.5)
+    # Show observed z-score (one-sided test baseline γ = 0.5)
     n = sim_len
     mu = gamma_sim * n
     sigma = math.sqrt(max(n * gamma_sim * (1.0 - gamma_sim), 1e-9))
     z_val = (s_count - mu) / sigma
-    st.metric("Detected z-score", f"{z_val:.2f}")
+    st.metric("Observed z-score", f"{z_val:.2f}")
 
     # Match styles to earlier visualization
     green_style = "color:#2e7d32;font-weight:600;"
@@ -521,16 +521,16 @@ for t in 1..n:
     html_tokens = []
     for tok, is_green in zip(tokens, greens):
         if is_green:
-            html_tokens.append(f"<span style=\"{green_style}\">{tok}</span>")
+            html_tokens.append(f'<span style="{green_style}">{tok}</span>')
         else:
-            html_tokens.append(f"<span style=\"{red_style}\">{tok}</span>")
+            html_tokens.append(f'<span style="{red_style}">{tok}</span>')
     legend = (
-        "<span style=\"color:#2e7d32;font-weight:700;\">green</span> = in greenlist · "
-        "<span style=\"color:#c62828;font-weight:700;\">red</span> = out of greenlist"
+        '<span style="color:#2e7d32;font-weight:700;">green</span> = in greenlist · '
+        '<span style="color:#c62828;font-weight:700;">red</span> = out of greenlist'
     )
     st.markdown(legend, unsafe_allow_html=True)
     html_block = (
-        "<div style=\"border:1px solid #eee;padding:12px;border-radius:8px;line-height:1.7;font-size:0.95rem;\">"
+        '<div style="border:1px solid #eee;padding:12px;border-radius:8px;line-height:1.7;font-size:0.95rem;">'
         + " ".join(html_tokens)
         + "</div>"
     )
@@ -563,4 +563,282 @@ for t in 1..n:
 
     st.info(
         "Bottom line: statistical watermarking is fragile under data‑driven extraction."
+    )
+
+with replication_tab:
+    st.subheader("KG2‑SelfHash")
+    st.markdown(
+        """
+        For the replication, I reimplemented KG2‑SelfHash watermark with window size
+        $w = 2$. I intentionally chose this value instead the standard $w = 3$ to simplify
+        experimentation and speed up iteration on my end.
+
+        However, it is important to note some trade-offs about window sizes:
+        - Larger windows: spoofing becomes harder (stronger context coupling), but scrubbing becomes easier (more structure to paraphrase against).
+        - Smaller windows: spoofing becomes easier (weaker coupling), but scrubbing becomes harder (less exploitable structure).
+
+        Samples were generated with [Llama 3.2 3B](https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct) using prompts from the [UltraFeedback prompts dataset](https://huggingface.co/datasets/trl-lib/ultrafeedback-prompt).
+        """
+    )
+
+    # KG2‑SelfHash greenlist selection pseudocode
+    with st.expander("KG2‑SelfHash: greenlist (pseudocode)", expanded=True):
+        st.code(
+            """
+# Inputs at step t
+#   ctx         : previous token ids
+#   logits      : model logits for all tokens at step t
+#   V           : vocabulary token ids
+#   gamma       : ratio of green tokens between
+#   w           : window size
+#   F_K         : PRF with key K
+# Returns
+#   G_t         : green tokens at step t
+
+sorted_logits = argsort_desc(scores)
+G_t = []
+
+for x, logit in sorted_logits[:1000]: # Limit computation
+    seed = min(F_K(x, ctx[t - i]) for i range(1, w + 1))
+    u = random(seed)
+    if u < gamma:
+        G_t.append(v)
+
+return set(G_t)
+            """,
+            language="python",
+        )
+
+    st.divider()
+
+    st.subheader("Watermark Examples")
+
+
+    data_path = os.path.join("web", "examples.json")
+
+    def load_examples(path: str):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            st.warning(f"No examples file found at `{data_path}`. Using an empty list.")
+            return []
+        except Exception as e:
+            st.error(f"Failed to load examples: {e}")
+            return []
+
+    examples = load_examples(data_path)
+
+    if not examples:
+        st.info(
+            "Add your dataset as a JSON list with fields: `prompt`, `base` {`tokens`, `green`} and `watermarked` {`tokens`, `green`}."
+        )
+
+    if examples:
+        idx = st.selectbox(
+            "Choose example by prompt",
+            options=list(range(len(examples))),
+            index=0,
+            format_func=lambda i: examples[i].get("prompt", f"Example {i}"),
+        )
+
+        ex = examples[int(idx)]
+
+        st.markdown(f"**Prompt:** {ex.get('prompt', '')}")
+
+        def render_series(label: str, series: dict):
+            tokens: list[str] = series.get("tokens", [])
+            greens: list[bool] = series.get("green", [])
+            if len(tokens) != len(greens):
+                st.error(
+                    f"Token/label length mismatch in `{label}`: {len(tokens)} vs {len(greens)}"
+                )
+                return
+            n = len(tokens)
+            s = sum(1 for g in greens if g)
+            gamma_fixed = 0.5
+            mu = gamma_fixed * n
+            sigma = math.sqrt(max(n * gamma_fixed * (1.0 - gamma_fixed), 1e-12))
+            z = (s - mu) / sigma if sigma > 0 else float("inf")
+            st.metric("Observed z-score", f"{z:.2f}")
+
+            green_style = "color:#2e7d32;font-weight:600;"
+            red_style = "color:#c62828;"
+            html_tokens = []
+            for tok, is_green in zip(tokens, greens):
+                if is_green:
+                    html_tokens.append(f'<span style="{green_style}">{tok}</span>')
+                else:
+                    html_tokens.append(f'<span style="{red_style}">{tok}</span>')
+            html_block = (
+                '<div style="border:1px solid #eee;padding:12px;border-radius:8px;line-height:1.7;font-size:0.95rem;">'
+                + "".join(html_tokens)
+                + "</div>"
+            )
+            st.markdown(html_block, unsafe_allow_html=True)
+
+        legend = (
+            '<span style="color:#2e7d32;font-weight:700;">green</span> = in greenlist · '
+            '<span style="color:#c62828;font-weight:700;">red</span> = out of greenlist'
+        )
+        st.markdown(legend, unsafe_allow_html=True)
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("Base")
+            render_series("Base", ex.get("base", {}))
+        with c2:
+            st.subheader("Watermarked")
+            render_series("Watermarked", ex.get("watermarked", {}))
+
+    st.divider()
+
+    st.subheader("Spoof Attack Replication (B1, D0)")
+    st.markdown(
+        """
+        Threat model and setup:
+        - Dimensions used: **B1** (base responses available), **D0** (no detector access). This contrasts
+          base vs. watermarked behavior without relying on a detector API.
+        - Alternate setting: **B0, D0** is also feasible by swapping in a different auxiliary/base model
+          to approximate the unwatermarked distribution when true base outputs are unavailable.
+
+        Data and procedure:
+        - Collected ~30,000 generations each from the base and watermarked models (≈350 tokens on average).
+        - Computed a per-(context, target) "boost" that captures how much the watermark increases the relative odds of a token
+          compared to the base. This supervision fits an attack scorer s(ctx, tok).
+        - During decoding, added a bias proportional to s(ctx, tok) to steer outputs toward tokens likely to be green under the watermark,
+          yielding spoofed samples.
+
+        Results below visualize the FPR for multiple runs, varying the number of samples used and the attack delta.
+        """
+    )
+
+
+
+    # Build the chart from CSV data and style for dark background
+    csv_path = os.path.join(os.path.dirname(__file__), "graph_data.csv")
+    try:
+        df = pd.read_csv(csv_path)
+
+        base = alt.Chart(df).encode(
+            x=alt.X("limit_samples:Q", title="Number of samples", scale=alt.Scale(type="log")),
+            y=alt.Y("success_rate:Q", title="FPR", axis=alt.Axis(format="%")),
+            color=alt.Color("delta_att:N", title="δ"),
+            tooltip=[
+                alt.Tooltip("limit_samples:Q", title="Samples"),
+                alt.Tooltip("success_rate:Q", title="Success", format=".1%"),
+                alt.Tooltip("z_avg:Q", title="Avg. z", format=".2f"),
+                alt.Tooltip("delta_att:N", title="δ"),
+            ],
+        )
+
+        line = base.mark_line(interpolate="monotone")
+
+        # Add end-of-line labels colored per series
+        labels = (
+            base.transform_joinaggregate(max_limit="max(limit_samples)", groupby=["delta_att"])  # type: ignore
+            .transform_filter("datum.limit_samples == datum.max_limit")
+            .transform_calculate(label='"δ = " + toString(datum.delta_att)')
+            .mark_text(align="left", dx=6, dy=0, fontSize=12)
+            .encode(text=alt.Text("label:N"), color=alt.Color("delta_att:N", legend=None))
+        )
+
+        chart = (
+            (line + labels)
+            .configure_view(strokeWidth=0)
+            .configure_axis(
+                grid=True,
+                gridColor="#333333",
+                domainColor="#666666",
+                tickColor="#666666",
+                labelColor="#FFFFFF",
+                titleColor="#FFFFFF",
+            )
+            .configure_legend(labelColor="#FFFFFF", titleColor="#FFFFFF")
+            .configure_title(color="#FFFFFF")
+        )
+
+        st.altair_chart(chart, use_container_width=True)
+    except Exception as e:
+        st.error(f"Failed to render graph: {e}")
+
+with reflection_tab:
+    st.subheader("Technical reflections")
+    st.markdown(
+        """
+        - Most text watermarks bias token probabilities rather than embed robust signals in content.
+        - Paraphrasing, translation, summarization, or minor perturbations can materially reduce detection power.
+        - Purposeful attacks (scrubbing) can steer away from predicted‑green tokens to drop z‑scores below thresholds.
+        - Increasing robustness often harms quality or increases false positives; long texts help, but aren’t always available.
+        """
+    )
+
+    st.divider()
+
+    st.subheader("Where Text Watermarking Appears in Policy/Practice")
+
+    with st.expander("United States", expanded=False):
+        st.markdown(
+            """
+            - **Executive Order 14110 (Oct 2023):** Defines *watermarking* and *synthetic content* (including **text**) and directs Commerce/NIST to develop guidance for content authentication and labeling. It **does not mandate** text watermarking but establishes it as a technique federal agencies should evaluate.
+            - **NIST guidance (2024):** Discusses watermarking for text alongside cryptographic signing and metadata; emphasizes **measurement of robustness**, false-positive risks, and using **multi-method provenance** rather than relying on watermarking alone.
+            - **US legislative proposals (e.g., AI Labeling Act; DEEPFAKES Accountability Act):** Primarily target image/audio/video. Some language is broad (“AI-generated content”), but **there is no enacted US law that mandates text watermarking**.
+            """
+        )
+
+    with st.expander("China", expanded=False):
+        st.markdown(
+            """
+            - **Deep Synthesis Provisions (in force Jan 2023):** Apply to **synthetic text** as well as images/audio/video and require providers to include identifiers; **implicit identifiers (digital watermarks)** are recognized.
+            - **Measures for Labeling of AI-Generated Content (2024–2025 rulemaking):** Reinforce that both **explicit labels** and **implicit watermarks** are acceptable compliance paths for text and non-text outputs.
+            """
+        )
+
+    with st.expander("European Union", expanded=False):
+        st.markdown(
+            """
+            - **AI Act (final text 2024/2025):**
+            - **Deployers** must disclose when presenting deepfake content (mainly image/audio/video scenarios).
+            - **Providers of systems that generate synthetic content — including text — must ensure outputs are “marked in a machine-readable, detectable manner.”** The Act is **technology-neutral**; **watermarking is one way** (not the only way) to comply with this obligation.
+            """
+        )
+
+    with st.expander("Private Sector", expanded=False):
+        st.markdown(
+            """
+            - **Google DeepMind — SynthID-Text (2023→2024):** A research-backed text watermarking approach (peer-reviewed) positioned for practical use; part of Google’s broader provenance strategy. Independent studies have begun probing robustness.
+            - **OpenAI:** Investigated text watermarking (2022–2023) but has **not deployed** a text watermarking tool in production due to robustness/usability concerns; the prior AI-text classifier was retired for low accuracy.
+            - **Major platforms (YouTube, Meta, TikTok):** Operational labeling relies mostly on **provenance standards (e.g., C2PA/Content Credentials)** for images/audio/video. **There is little platform-level reliance on text watermarks** in enforcement today.
+            """
+        )
+
+    with st.expander("International & Soft-Law Frameworks", expanded=False):
+        st.markdown(
+            """
+            - **G7 Hiroshima Process (2023):** Encourages identification of AI-generated content and cites **watermarking** among practical tools (implicitly includes text).
+            - **Singapore — Model AI Governance Framework for GenAI (2024):** Recommends provenance methods including **digital watermarking and cryptographic credentials**; technology-neutral and applicable to text.
+            - **India — MeitY advisories (2024):** Urge labeling and embedding **persistent identifiers/metadata** for synthetic **text, audio, visual, and audiovisual** content; functionally aligned with watermarking.
+            """
+        )
+
+    with st.expander("Key technical caveats for LLM/text watermarking", expanded=False):
+        st.markdown(
+            """
+            - **Fragile under paraphrase/translation/editing:** Small changes can substantially degrade detectability.
+            - **Adversarial removals:** Simple perturbations can evade many schemes.
+            - **Trade-offs:** Increasing robustness often hurts model utility or raises false-positive risk.
+            - **Practical implication:** Use **multi-layer provenance** (signing/metadata + watermarking + disclosure UX) rather than relying on text watermarks alone.
+            """
+        )
+
+    st.divider()
+
+    st.subheader("Takeaways")
+    st.markdown(
+        """
+        - **Fragile under paraphrase/translation/editing:** Small changes can substantially degrade detectability.
+        - **Adversarial removals:** Simple perturbations can evade many schemes.
+        - **Trade-offs:** Increasing robustness often hurts model utility or raises false-positive risk.
+        - **Practical implication:** Use **multi-layer provenance** (signing/metadata + watermarking + disclosure UX) rather than relying on text watermarks alone.
+        """
     )
