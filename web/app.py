@@ -14,11 +14,11 @@ import altair as alt
 import streamlit as st
 
 st.title("Watermark Stealing Replication")
-st.write("Juan Belieni @ AI Security Bootcamp")
+st.caption("Juan Belieni -- [AISB](https://aisb.dev) Capstone Project")
 
 
-watermark_tab, watermark_stealing_tab, replication_tab, reflection_tab = st.tabs(
-    ["Watermark", "Watermark Stealing", "Spoof Attack Replication", "Reflection"]
+watermark_tab, watermark_stealing_tab, replication_tab, conclusion_tab = st.tabs(
+    ["Watermark", "Watermark Stealing", "Spoof Attack Replication", "Conclusion"]
 )
 
 with watermark_tab:
@@ -40,10 +40,10 @@ with watermark_tab:
 
     st.divider()
 
-    st.subheader("KGW Watermark (Greenlist Sampling)")
+    st.subheader("KGW Scheme (Greenlist Sampling)")
     st.markdown(
         """
-        A widely used LLM watermark (often referred to as the KGW scheme, after its authors) works
+        A widely used LLM watermark works
         by biasing the model to prefer a secret, pseudorandom subset of the vocabulary — the
         greenlist — at each decoding step. The subset changes per position using a secret key and a
         pseudo‑random function (PRF), so it looks random to anyone without the key.
@@ -112,7 +112,7 @@ with watermark_tab:
 
 
     n_fixed = 100
-    gamma = st.slider("Green rate γ", 0.00, 1.0, 0.5, step=0.05)
+    gamma = st.slider("Green rate $\\gamma$", 0.00, 1.0, 0.5, step=0.05)
     s_green = st.slider("Observed green tokens (s)", 0, n_fixed, 50, step=2)
 
     mu = gamma * n_fixed
@@ -127,8 +127,6 @@ with watermark_tab:
 
     if "green_seed" not in st.session_state:
         st.session_state.green_seed = 42
-    if st.button("Reshuffle green token positions", use_container_width=True):
-        st.session_state.green_seed += 1
 
     base_words = (
         "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor "
@@ -248,13 +246,12 @@ watermarked = (z >= tau)
             - Model‑agnostic: works at sampling time; no retraining.
             - Efficient: a small logit bias per step.
             - Tunable: trade off visibility (delta) vs. utility.
-            - Composable: can be chunked and aggregated.
             """
         )
     with col2:
         st.warning(
             """
-            - Edits/paraphrases dilute the signal; long texts help.
+            - Edits/paraphrases dilute the signal.
             - Deterministic decoding (e.g., greedy) weakens embedding.
             - Access to the key enables detection but must be kept secret.
             - Not a proof of authorship; statistical evidence only.
@@ -262,7 +259,7 @@ watermarked = (z >= tau)
         )
 
 with watermark_stealing_tab:
-    st.subheader("What Is Watermark Stealing?")
+    st.subheader("What Is Watermark Stealing? 😈")
     st.markdown(
         """
         Watermark stealing is an attack where an adversary, with black‑box access to a
@@ -276,6 +273,8 @@ with watermark_stealing_tab:
         This undermines watermarking’s goals of provenance and attribution.
         """
     )
+
+    st.info("Original paper available in [arXiv:2402.19361](https://arxiv.org/pdf/2402.19361).")
 
     st.divider()
 
@@ -346,12 +345,12 @@ with watermark_stealing_tab:
     st.latex(
         r"s(T, \text{ctx}) = \begin{cases} \tfrac{1}{c}\,\min\!\left( \tfrac{p_w(T\mid\text{ctx})}{p_b(T\mid\text{ctx})},\ c \right), & \text{if } \tfrac{p_w}{p_b} \ge 1 \\ 0, & \text{otherwise} \end{cases}"
     )
-    st.text("c > 1 is a clipping constant to bound the bias.")
+    st.markdown("$c > 1$ is a clipping constant to bound the bias.")
 
     with st.expander("Steps to perform the attack", expanded=True):
         st.markdown(
             """
-            - Obtain $p_b(\cdot\mid\\text{ctx})$ and $p_w(\cdot\mid\\text{ctx})$ by training counting and computing the probabilities from the model outputs.
+            - Obtain $p_b(\cdot\mid\\text{ctx})$ and $p_w(\cdot\mid\\text{ctx})$ by counting and computing the probabilities from the model outputs.
             - Compute the ratio $r(T,\\text{ctx})=p_w/p_b$ and apply clipping.
             - Use $s(T,\\text{ctx})$ to bias decoding: add for spoofing, subtract for scrubbing.
             """
@@ -360,7 +359,7 @@ with watermark_stealing_tab:
     st.divider()
 
     st.subheader("Two Attacks")
-    with st.expander("1) Spoof (forge watermarked look)", expanded=True):
+    with st.expander("1) Spoof (forge watermarked look)", expanded=False):
         st.markdown(
             """
             Generate with an unwatermarked model, but add a small bias toward tokens the surrogate
@@ -381,7 +380,7 @@ for t in 1..n:
             language="python",
         )
 
-    with st.expander("2) Scrub (evade detection)", expanded=True):
+    with st.expander("2) Scrub (evade detection)", expanded=False):
         st.markdown(
             """
             Take genuine watermarked text and paraphrase it while steering away from tokens the
@@ -405,11 +404,11 @@ for t in 1..n:
     # Interactive: Spoof Attack Simulation
     st.subheader("Simulation of Spoof Attack")
     st.caption(
-        "Move δ to see tokens shift toward detector‑green. Only δ is adjustable."
+        "Move δ to see tokens shift toward detector‑green. Only $\delta$ is adjustable."
     )
 
     # --- Controls (only δ)
-    delta_bias = st.slider("Attack bias δ", 0.0, 4.0, 0.0, step=0.1)
+    delta_bias = st.slider("Attack bias $\delta$", 0.0, 4.0, 0.0, step=0.1)
 
     # Fixed settings for clarity
     sim_len = 100
@@ -550,53 +549,29 @@ for t in 1..n:
     )
     st.markdown(html_block, unsafe_allow_html=True)
 
-    st.divider()
+    st.write("")
 
-    st.subheader("What the Paper Finds")
-    st.markdown(
-        """
-        - Low‑budget feasibility: small datasets and simple classifiers suffice to learn useful
-          surrogates.
-        - High spoof success: unwatermarked outputs often pass detection at fixed low FPR.
-        - Effective scrubbing: detector confidence drops sharply with limited paraphrasing.
-        - Transferability: surrogates generalize across prompts and topics reasonably well.
-        """
-    )
-
-    st.subheader("Limitations and Defenses")
-    st.markdown(
-        """
-        - Rotating keys or per‑session salts reduce data reusability for the attacker.
-        - Larger randomness in decoding (or stronger detectors) complicates learning, but may hurt
-          utility.
-        - Cryptographic provenance (e.g., signatures at point of generation) addresses attribution
-          more robustly than statistical watermarks alone.
-        - Monitoring for scraping/abuse and rate‑limits raises attacker cost.
-        """
-    )
-
-    st.info(
-        "Bottom line: statistical watermarking is fragile under data‑driven extraction."
-    )
+    st.warning("Caveat: increasing attack bias $\delta$ can harm output quality.")
 
 with replication_tab:
-    st.subheader("KG2‑SelfHash")
+    st.subheader("KGW2‑SelfHash")
     st.markdown(
         """
-        For the replication, I reimplemented KG2‑SelfHash watermark with window size
+        For the replication, I reimplemented KGW2‑SelfHash watermark with window size
         $w = 2$. I intentionally chose this value instead the standard $w = 3$ to simplify
-        experimentation and speed up iteration on my end.
+        experimentation and speed up iteration for this replication.
 
         However, it is important to note some trade-offs about window sizes:
         - Larger windows: spoofing becomes harder (stronger context coupling), but scrubbing becomes easier (more structure to paraphrase against).
         - Smaller windows: spoofing becomes easier (weaker coupling), but scrubbing becomes harder (less exploitable structure).
 
-        Samples were generated with [Llama 3.2 3B](https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct) using prompts from the [UltraFeedback prompts dataset](https://huggingface.co/datasets/trl-lib/ultrafeedback-prompt).
+        Samples were generated with [Llama 3.2 3B](https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct) and [Qwen 2.5 3B](https://huggingface.co/Qwen/Qwen2.5-3B-Instruct) using prompts from the [UltraFeedback prompts dataset](https://huggingface.co/datasets/trl-lib/ultrafeedback-prompt).
+        The code is available in [juanbelieni/watermark-stealing-replication](https://github.com/juanbelieni/watermark-stealing-replication).
         """
     )
 
-    # KG2‑SelfHash greenlist selection pseudocode
-    with st.expander("KG2‑SelfHash: greenlist (pseudocode)", expanded=True):
+    # KGW2‑SelfHash greenlist selection pseudocode
+    with st.expander("KGW2‑SelfHash: greenlist (pseudocode)", expanded=False):
         st.code(
             """
 # Inputs at step t
@@ -719,8 +694,8 @@ return set(G_t)
         Data and procedure:
         - Collected ~30,000 generations each from the base and watermarked models (≈350 tokens on average).
         - Computed a per-(context, target) "boost" that captures how much the watermark increases the relative odds of a token
-          compared to the base. This supervision fits an attack scorer s(ctx, tok).
-        - During decoding, added a bias proportional to s(ctx, tok) to steer outputs toward tokens likely to be green under the watermark,
+          compared to the base.
+        - During decoding, added a bias proportional to the boost to steer outputs toward tokens likely to be green under the watermark,
           yielding spoofed samples.
 
         Results below visualize the FPR for multiple runs, varying the number of samples used and the attack delta.
@@ -785,7 +760,7 @@ return set(G_t)
         - Dimensions: **B0** (no true base responses), **D0** (no detector access).
         - Approach: approximate the base distribution with an auxiliary model to learn the surrogate scorer, then decode with a small spoofing bias.
 
-        The graph mirrors the B1,D0 view but uses results from the B0,D0 experiment.
+        This experiment is very similar to the previous one, only changing the auxiliary model.
         """
     )
 
@@ -835,18 +810,17 @@ return set(G_t)
     except Exception as e:
         st.error(f"Failed to render B0 graph: {e}")
 
-with reflection_tab:
-    st.subheader("Conclusion (Technical)")
+with conclusion_tab:
+    st.subheader("Conclusion")
     st.markdown(
         """
         **What this replication demonstrates**
         - **Surrogates are inexpensive and useful.** A clipped likelihood-ratio scorer trained from base vs. watermarked samples
           can approximate the hidden green/red partition well enough to **spoof** (push $z$ above threshold).
-        - **Defensive tuning has costs.** Larger $\\delta$, stricter decoding, and chunk aggregation improve detection but
-          degrade fluency and raise false positives.
+        - **Defensive tuning has costs.** Small bias $\\delta$ can improve spoof attack defense but makes detection harder.
 
         **Why the attack works (intuition)**
-        - KG-style schemes bias a rotating subset of tokens; learning *relative changes* $p_w/p_b$ is enough to steer sampling
+        - KGW-style schemes bias a rotating subset of tokens; learning *relative changes* $p_w/p_b$ is enough to steer sampling
           towards likely-green tokens without knowing the key.
         """
     )
@@ -869,7 +843,7 @@ with reflection_tab:
         st.warning(
             """
             **Broke / Fragile**
-            - For larger windows (e.g. $w=3$), the surrogate required a much larger dataset; this
+            - For larger windows (e.g. $w=3$), the surrogate required a much larger dataset of samples; this
             made the attack infeasible to replicate fully within this project’s scope.
             - Higher $\\delta$ makes spoofing more successful, but can degrade quality.
             - Low-entropy sequences reduces the signal available for both watermark detection and surrogate-based attacks,
@@ -888,6 +862,6 @@ with reflection_tab:
         - Can we design text-native signals that survive paraphrase without major utility loss?
         - What are realistic attacker query budgets in deployed systems?
         - How well do surrogates transfer across model scales and instruction-tuning variants?
-        - What detection thresholds control false positives at Internet scale?
+        - What detection thresholds control false positives at internet scale?
         """
     )

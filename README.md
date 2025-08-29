@@ -1,6 +1,9 @@
 # Watermark Stealing: Replication
 
+> Capstone project developed during the last week of the [AI Security Bootcamp](https://aisb.dev).
+
 This repository contains a small-scale replication of the paper *Watermark Stealing Attacks on Large Language Models* (2024), which demonstrates that statistical text watermarking schemes can be extracted and circumvented by low-budget adversaries.
+
 
 ## Overview
 
