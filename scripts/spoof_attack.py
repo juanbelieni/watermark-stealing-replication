@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Spoof attack using a surrogate watermark scorer.
+
+Estimates conditional probabilities from base and watermarked corpora to build
+a clipped likelihood-ratio scorer that biases an unwatermarked model toward
+detector-green tokens. Evaluates success via a WatermarkedLM detector.
+"""
 
 import wandb
 import argparse
@@ -6,9 +12,9 @@ import json
 import random
 import torch
 import numpy as np
+from pathlib import Path
 from collections import defaultdict
 from dataclasses import dataclass
-from itertools import combinations
 from tqdm import tqdm
 from transformers import (
     AutoTokenizer,
@@ -62,18 +68,12 @@ def batch_tokenize(
 
 # ------------------------------ Counting (full 3-sets only) ------------------------------------
 
-conditional_id = tuple[int, frozenset[int]]  # (target_token_id, context_set_of_size_3)
-
-
-def powerset(n: int):
-    s = range(0, n)
-    return [set(c) for r in range(len(s) + 1) for c in combinations(s, r)]
+conditional_id = tuple[int, frozenset[int]]  # (target_token_id, context_set)
 
 
 def conditional_count(
     input_ids: list[list[int]], window_size: int = 3
 ) -> dict[conditional_id, int]:
-    # the keys will be type tuple[int, set[int]]
     counts = defaultdict(int)
 
     for seq in tqdm(input_ids, "Counting (all subsets)"):
@@ -82,9 +82,6 @@ def conditional_count(
             context = tuple(seq[i - h : i])
             target = seq[i]
 
-            # for subset in powerset(h):
-            #     context_subset = frozenset(context[j] for j in subset)
-            #     counts[(target, context_subset)] += 1
             counts[(target, frozenset(context))] += 1
             counts[(target, frozenset({}))] += 1
 
@@ -138,11 +135,11 @@ def compute_boosts(
         boosts_by_ctx[ctx_set][target_id] = ratio + 1e3
 
     # normalize
-    for tv in tqdm(boosts_by_ctx.values(), desc="Normalizing boosts"):
-        max_tv = max(tv.values())
+    for target_values in tqdm(boosts_by_ctx.values(), desc="Normalizing boosts"):
+        max_tv = max(target_values.values())
         if max_tv > 0.0:
-            for t in tv:
-                tv[t] /= max_tv
+            for t in target_values:
+                target_values[t] /= max_tv
 
     return boosts_by_ctx
 
@@ -185,19 +182,18 @@ class AttackLogitsProcessor(LogitsProcessor):
     def __call__(
         self, input_ids: torch.LongTensor, scores: torch.FloatTensor
     ) -> torch.FloatTensor:
-        bsz, seqlen = input_ids.size(0), input_ids.size(1)
-        if seqlen < self.config.window_size:
+        batch_size, seq_len = input_ids.size(0), input_ids.size(1)
+        if seq_len < self.config.window_size:
             return scores
         scores = scores.clone()
 
-        for i in range(bsz):
+        for i in range(batch_size):
             ctx_set = frozenset(input_ids[i, -self.config.window_size :].tolist())
             idx = self.ctx_to_idx.get(ctx_set)
             if idx is None or idx.numel() == 0:
-                # print(f"Context {ctx_set} not found or empty; skipping.")
                 continue
-            idx = idx.cuda()
-            vals = self.ctx_to_val[ctx_set].cuda()  # same length as idx
+            idx = idx.to(scores.device)
+            vals = self.ctx_to_val[ctx_set].to(scores.device)  # same length as idx
             scores[i, idx] += self.config.delta * vals
 
         return scores
@@ -248,6 +244,24 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Spoof attack generation and evaluation")
 
     ap.add_argument(
+        "--base",
+        type=Path,
+        default=BASE_PATH,
+        help="Path to base JSON file",
+    )
+    ap.add_argument(
+        "--watermarked",
+        type=Path,
+        default=WATERMARKED_PATH,
+        help="Path to watermarked JSON file",
+    )
+    ap.add_argument(
+        "--model",
+        type=str,
+        default=MODEL_ID,
+        help="HF model id or path.",
+    )
+    ap.add_argument(
         "--delta_att",
         type=float,
         default=DELTA_ATT,
@@ -290,7 +304,7 @@ if __name__ == "__main__":
             "delta_att": DELTA_ATT,
             "limit_samples": LIMIT_SAMPLES,
             "seed": args.seed,
-            "model_id": MODEL_ID,
+            "model_id": args.model,
             "window_size": WINDOW_SIZE,
             "clip_c": CLIP_C,
             "num_prompts": NUM_PROMPTS,
@@ -300,13 +314,13 @@ if __name__ == "__main__":
 
     # Tokenizer
     tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(
-        MODEL_ID, use_fast=True
+        args.model, use_fast=True
     )
     tokenizer.pad_token = tokenizer.eos_token
 
     # Load and tokenize corpora
-    base_samples = load_samples(BASE_PATH)
-    wm_samples = load_samples(WATERMARKED_PATH)
+    base_samples = load_samples(args.base)
+    wm_samples = load_samples(args.watermarked)
 
     base_ids = batch_tokenize(tokenizer, base_samples)
     wm_ids = batch_tokenize(tokenizer, wm_samples)
@@ -339,7 +353,7 @@ if __name__ == "__main__":
 
     # Build attack LM
     alm = AttackLM(
-        MODEL_ID,
+        args.model,
         delta=DELTA_ATT,
         window_size=WINDOW_SIZE,
         ctx_to_idx=ctx_to_idx,
@@ -372,9 +386,10 @@ if __name__ == "__main__":
     )
     print(f"Average z-score: {z_avg:.2f}")
 
-
-    wandb.log({
-        "success_rate": success_rate,
-        "z_avg": z_avg,
-    })
+    wandb.log(
+        {
+            "success_rate": success_rate,
+            "z_avg": z_avg,
+        }
+    )
     wandb.finish()

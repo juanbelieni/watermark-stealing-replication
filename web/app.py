@@ -1,3 +1,9 @@
+"""Streamlit app showcasing LLM watermarking and spoof replication.
+
+Tabs cover: a primer on KGW watermarking, a high-level view of watermark
+stealing, a small replication demo, and reflections/policy notes.
+"""
+
 import math
 import random
 import hashlib
@@ -5,7 +11,6 @@ import json
 import os
 import pandas as pd
 import altair as alt
-import numpy as np
 import streamlit as st
 
 st.title("Watermark Stealing Replication")

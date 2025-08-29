@@ -1,3 +1,11 @@
+"""Lightweight LM wrapper around Hugging Face APIs.
+
+Provides:
+- Tokenizer/model loading with sensible defaults
+- Optional ``logits_processor`` hook passthrough for generation
+- A convenience ``generate`` method returning only completion text
+"""
+
 from typing import List, Optional, Sequence
 
 import torch

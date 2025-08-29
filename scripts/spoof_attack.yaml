@@ -6,12 +6,12 @@ metric:
   name: success_rate
   goal: maximize
 parameters:
+  seed:
+    values: [0, 1, 2, 3, 4]
   delta_att:
     values: [2.5, 5, 7.5, 10]
   limit_samples:
     values: [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000]
-  seed:
-    values: [0, 1, 2, 3, 4]
 
 # Ensure args are passed to the script
 command:
@@ -21,4 +21,6 @@ command:
   - python
   - -m
   - scripts.spoof_attack
+  - --base=data/samples_qwen_qwen2.5_3b_instruct_base_20250828T191607Z.json
+  - --model=Qwen/Qwen2.5-3B-Instruct
   - ${args}

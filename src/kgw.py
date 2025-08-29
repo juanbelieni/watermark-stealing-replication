@@ -1,3 +1,10 @@
+"""KGW watermarking components.
+
+This module implements a GPU-friendly KGW greenlist selector (as a
+``LogitsProcessor``) and a lightweight ``WatermarkedLM`` wrapper that exposes
+generation and watermark detection helpers.
+"""
+
 import hashlib
 import torch
 from dataclasses import dataclass
@@ -16,9 +23,8 @@ class KGWConfig:
     self_hash: bool
 
 
-# ---- 32-bit mix on int64 (CUDA-safe) ----
 def _mix32(x: torch.Tensor) -> torch.Tensor:
-    # x: int64 tensor (CPU or CUDA)
+    """32-bit mix on int64 tensor (CUDA-safe)."""
     device = x.device
     mask32 = torch.tensor(0xFFFFFFFF, dtype=torch.int64, device=device)
     prime = torch.tensor(16777619, dtype=torch.int64, device=device)
@@ -33,7 +39,7 @@ def _mix32(x: torch.Tensor) -> torch.Tensor:
 
 
 def _u01_from_mix32(h: torch.Tensor) -> torch.Tensor:
-    # map 32-bit state -> [0,1)
+    """Map 32-bit state to [0, 1)."""
     return (h & 0xFFFFFFFF).to(torch.float32) / 4294967296.0
 
 
@@ -41,7 +47,7 @@ def _u01_from_mix32(h: torch.Tensor) -> torch.Tensor:
 def _prf_u01_gpu(
     seed_i64: torch.Tensor, token_i64: torch.Tensor, key_i64: torch.Tensor
 ) -> torch.Tensor:
-    # all int64, broadcastable
+    """Pseudorandom float in [0, 1) from int64 inputs (broadcastable)."""
     h = _mix32(seed_i64 ^ key_i64)
     h = _mix32(h ^ token_i64)
     return _u01_from_mix32(h)
@@ -88,7 +94,10 @@ class KGWLogitsProcessor(LogitsProcessor):
 
             green_ids = perm[:green_count]
         else:
-            hash_key = torch.tensor(self.config.hash_key, dtype=torch.long)
+            # Ensure key lives on the same device as inputs
+            hash_key = torch.tensor(
+                self.config.hash_key, dtype=torch.long, device=input_ids.device
+            )
             candidates = scores.argsort(dim=-1, descending=True)
 
             h = min(self.config.window_size, input_ids.size(0))
@@ -154,7 +163,7 @@ class WatermarkedLM(LM):
     def detect_watermark(
         self,
         text: str,
-        threshold: float = 2.0,  # Threshold for z-score (default is 2.0, which corresponds to a 95% confidence level)
+        threshold: float = 2.0,
     ) -> tuple[bool, float]:
         enc = self.tokenizer(
             text,
@@ -163,15 +172,15 @@ class WatermarkedLM(LM):
         ).to(self.model.device)
         input_ids: torch.LongTensor = enc["input_ids"][0]
 
-        s = 0  # number of green tokens observed
-        n = input_ids.size(0)
+        green_count = 0
+        num_tokens = input_ids.size(0)
 
-        if n == 0:
+        if num_tokens == 0:
             return (False, 0.0)
 
         scores: torch.FloatTensor = self.model(input_ids.unsqueeze(0)).logits[0]
 
-        for i in range(1, n):
+        for i in range(1, num_tokens):
             curr_input_ids = input_ids[:i]
             curr_scores = scores[i - 1]
             token_id = input_ids[i].item()
@@ -181,14 +190,12 @@ class WatermarkedLM(LM):
                 curr_scores,
             )
 
-            # Check if current token is in the green list
             if token_id in green_ids.tolist():
-                s += 1
+                green_count += 1
 
-        # Formula: z = (s - n * gamma) / sqrt(n * gamma * (1 - gamma))
         gamma = self.kgw.config.gamma
-        z = (s - n * gamma) / ((n * gamma * (1 - gamma)) ** 0.5)
-
-        # print(f"Detected {s} green tokens out of {n} total tokens. z = {z:.2f}")
+        z = (green_count - num_tokens * gamma) / (
+            (num_tokens * gamma * (1 - gamma)) ** 0.5
+        )
 
         return (z > threshold, z)

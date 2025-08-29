@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate a dataset of samples on the TRL UltraFeedback prompts (test split),
+Generate a dataset of samples on the TRL UltraFeedback prompts (train split),
 both watermarked and not-watermarked (base), and emit a JSON file per mode
 with all generated samples alongside the generation and watermark
 configuration. Filenames include a timestamp.
@@ -56,7 +56,7 @@ def generate_for_mode(
         lm = WatermarkedLM(model_name, self_hash=self_hash, delta=2.5, device=device)
         watermark_config = asdict(lm.kgw.config)
     elif mode == "base":
-        lm = LM(model_name)
+        lm = LM(model_name, device=device)
         watermark_config = None
     else:
         raise ValueError("mode must be 'watermarked' or 'base'")
@@ -168,21 +168,20 @@ if __name__ == "__main__":
     ts_iso = datetime.now(timezone.utc).isoformat() + "Z"
 
     if args.mode in ("base", "both"):
-        with torch.device(args.device):
-            samples, _ = generate_for_mode(
-                mode="base",
-                model_name=args.model,
-                prompts=prompts,
-                per_prompt=args.per_prompt,
-                max_new_tokens=args.max_new_tokens,
-                temperature=args.temperature,
-                self_hash=args.self_hash,
-                device=args.device,
-            )
+        samples, _ = generate_for_mode(
+            mode="base",
+            model_name=args.model,
+            prompts=prompts,
+            per_prompt=args.per_prompt,
+            max_new_tokens=args.max_new_tokens,
+            temperature=args.temperature,
+            self_hash=args.self_hash,
+            device=args.device,
+        )
 
         output = {
             "dataset_id": DATASET_ID,
-            "split": "test",
+            "split": "train",
             "limit": args.limit,
             "model": args.model,
             "timestamp": ts_iso,
@@ -203,21 +202,20 @@ if __name__ == "__main__":
         print(f"Wrote base samples to {base_path}")
 
     if args.mode in ("watermarked", "both"):
-        with torch.device(args.device):
-            samples, watermark_config = generate_for_mode(
-                mode="watermarked",
-                model_name=args.model,
-                prompts=prompts,
-                per_prompt=args.per_prompt,
-                max_new_tokens=args.max_new_tokens,
-                temperature=args.temperature,
-                self_hash=args.self_hash,
-                device=args.device,
-            )
+        samples, watermark_config = generate_for_mode(
+            mode="watermarked",
+            model_name=args.model,
+            prompts=prompts,
+            per_prompt=args.per_prompt,
+            max_new_tokens=args.max_new_tokens,
+            temperature=args.temperature,
+            self_hash=args.self_hash,
+            device=args.device,
+        )
 
         output = {
             "dataset_id": DATASET_ID,
-            "split": "test",
+            "split": "train",
             "limit": args.limit,
             "model": args.model,
             "timestamp": ts_iso,

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
+"""Quick sanity test for KGW watermarking.
 
+Generates a small set of base and watermarked completions and verifies that
+the detector flags only the watermarked outputs with a sensible z-score.
+"""
 
 from src.kgw import WatermarkedLM
 

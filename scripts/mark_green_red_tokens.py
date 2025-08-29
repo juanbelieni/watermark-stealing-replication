@@ -212,12 +212,12 @@ def main() -> None:
     results: List[Dict[str, Any]] = []
 
     for i in range(n):
-        b = base_samples[100+i]
-        w = wm_samples[100+i]
-        prompt: str = w["prompt"]
+        base_sample = base_samples[i]
+        wm_sample = wm_samples[i]
+        prompt: str = wm_sample["prompt"]
 
         # Sanity: prompts should match
-        if b["prompt"] != prompt:
+        if base_sample["prompt"] != prompt:
             # Fall back to wm prompt
             pass
 
@@ -226,8 +226,8 @@ def main() -> None:
 
         # Get chosen completion for each file (skip if missing)
         try:
-            base_text = b["completions"][idx]
-            wm_text = w["completions"][idx]
+            base_text = base_sample["completions"][idx]
+            wm_text = wm_sample["completions"][idx]
         except Exception:
             continue
 

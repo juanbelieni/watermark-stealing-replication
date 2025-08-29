@@ -19,10 +19,96 @@ These attacks undermine the core security goals of watermarking: reliable attrib
 * **Detector**: Statistical test (z-test) comparing green-token rate against expected baseline.
 * **Attacker surrogate**: Lightweight classifier (logistic regression / small MLP) trained on a small set of watermarked samples to approximate “greenness” of tokens in context.
 * **Spoofing attack**: Use the surrogate to bias generation from an unwatermarked model; measure fraction of texts that pass detection.
-* **Scrubbing attack**: Feed watermarked text into a paraphraser, guided by the surrogate; measure false negative rate (FNR) while preserving semantics.
 * **Metrics**:
 
   * **Detection scores** (z-scores).
-  * **Spoofing success rate**: % of unwatermarked outputs flagged as watermarked.
-  * **Scrubbing success rate**: FNR at a fixed false positive rate (e.g., 10⁻³).
-  * **Semantic fidelity**: BLEU/BERTScore to confirm meaning retention.
+  * **Spoofing FPR**: % of spoofed outputs flagged as watermarked.
+
+## What’s in this repo
+
+- `src/lm.py`: Lightweight wrapper around Hugging Face causal LMs with an optional logits processor hook and a convenience `generate` method.
+- `src/kgw.py`: KGW-style watermark implementation (logits processor) and a `WatermarkedLM` helper with a built-in detector.
+- `scripts/generate_samples.py`: Generate JSON datasets of base vs watermarked completions on UltraFeedback prompts.
+- `scripts/mark_green_red_tokens.py`: Recreate green/red classification per token for sample pairs.
+- `scripts/spoof_attack.py`: Minimal spoofing replication using a clipped likelihood-ratio surrogate.
+- `scripts/test_watermark.py`: Quick sanity test for watermark generation and detection.
+- `web/app.py`: Streamlit app that explains watermarking, the stealing threat model, and shows toy/annotated examples.
+- `justfile`: Handy `uv run` recipes for common workflows.
+
+## Requirements
+
+- Python 3.11+
+- GPU recommended for model inference (flash-attn enabled); falls back to CPU if needed.
+- Hugging Face token with access to `meta-llama/Llama-3.2-3B-Instruct` if gated.
+- Dependencies defined in `pyproject.toml` and pinned via `uv.lock`.
+
+Install options:
+
+- With `uv` (recommended): `uv sync`
+- With pip: `pip install -e .`
+
+## Usage
+
+
+### Quick sanity test
+
+Verify watermarked outputs are detected and base outputs are not:
+
+```
+uv run python -m scripts.test_watermark
+```
+
+### Generate datasets
+
+This script now uses the UltraFeedback train split and records metadata in the output JSON.
+
+- Base: `uv run python -m scripts.generate_samples --mode base`
+- Watermarked: `uv run python -m scripts.generate_samples --mode watermarked`
+- Both: `uv run python -m scripts.generate_samples --mode both`
+
+Key flags: `--limit`, `--per_prompt`, `--max_new_tokens`, `--temperature`, `--self_hash`, `--device`.
+
+Outputs (under `data/`) include:
+
+- `mode`: `base` or `watermarked`
+- `split`: `train`
+- `generation_params`: run settings
+- `watermark_params`: present for watermarked runs (e.g., `gamma`, `delta`, `hash_key`, `window_size`, `self_hash`, `vocab_size`)
+
+### Spoof attack replication
+
+Run the spoofing script (logs optional metrics to Weights & Biases):
+
+```
+uv run python -m scripts.spoof_attack \
+  --delta_att 10 \
+  --limit_samples 10000 \
+  --seed 0 \
+  --wandb_project watermark-spoof
+```
+
+### Streamlit app
+
+- Run: `uv run streamlit run web/app.py`
+- The “Replication” tab can visualize annotated examples if you provide a JSON file with structure `{ prompt, base: { tokens, green }, watermarked: { tokens, green } }`.
+
+### Annotate examples for the app
+
+Produce token-level green/red for a subset of prompts and completions:
+
+```
+uv run python -m scripts.mark_green_red_tokens \
+  --base data/<base.json> \
+  --watermarked data/<watermarked.json> \
+  --out data/green_red_examples.json \
+  --num 5 --completion-index 0 --display text
+```
+
+The Streamlit app loads `web/examples.json`. Copy or symlink your output:
+
+```
+cp data/green_red_examples.json web/examples.json
+```
+
+
+
