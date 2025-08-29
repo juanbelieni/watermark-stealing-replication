@@ -53,7 +53,7 @@ with watermark_tab:
     with st.expander("Algorithm intuition", expanded=True):
         st.markdown(
             """
-            - Let V be the vocabulary. Choose a **greenlist rate** $\\gamma \\in (0,1)$ and a **bias**
+            - Let $V$ be the vocabulary. Choose a **greenlist rate** $\\gamma \\in (0,1)$ and a **bias**
                 $\\delta > 0$.
             - With a secret key $K$, a PRF maps the current context to a seed that selects a set
                 $G_t \\subset V$ with $|G_t| \\approx \\gamma \\cdot |V|$.
@@ -91,6 +91,15 @@ with watermark_tab:
 
     st.markdown(
         """
+        Hypotheses and what is tested:
+        - H0 (unwatermarked): at each position, the event "$\\text{token} \\in \\text{greenlist}$" is $\\text{Bernoulli}(\\gamma)$. The total $S$ of greens is $\\text{Binomial}(n, \\gamma)$, so $z \\sim N(0,1)$.
+        - H1 (watermarked): watermark bias increases the green rate ($E[S] > \\gamma n$), shifting z positive.
+        - Test: one‑sided; we reject H0 for large positive z (an excess of green tokens over chance).
+        """
+    )
+
+    st.markdown(
+        """
         Choose a threshold $\\tau$ to control the false positive rate (FPR). If $z \\ge \\tau$ we
         declare the text watermarked. Larger bias $\\delta$ and longer text $n$ increase power.
         Typical choices: $\\gamma \\approx 0.5$, $\\delta \\in [1.5, 4]$.
@@ -108,7 +117,8 @@ with watermark_tab:
 
     mu = gamma * n_fixed
     sigma = math.sqrt(n_fixed * gamma * (1.0 - gamma))
-    z_obs = (s_green - mu) / sigma if sigma > 0 else float("inf")
+    # Guard against σ=0 at γ in {0,1} to avoid infs/NaNs in charts
+    z_obs = (s_green - mu) / sigma if sigma > 0 else 0.0
 
     def normal_pdf(z: float) -> float:
         return (1.0 / math.sqrt(2.0 * math.pi)) * math.exp(-0.5 * z * z)
@@ -163,20 +173,19 @@ with watermark_tab:
     x_right = max(z_max, z_obs + 0.1)
     z_vals = [x_left + i * step for i in range(int((x_right - x_left) / step) + 1)]
     pdf_vals = [normal_pdf(z) for z in z_vals]
-    df = pd.DataFrame({"z": z_vals, "pdf": pdf_vals})
+    norm_df = pd.DataFrame({"z": z_vals, "pdf": pdf_vals})
 
     line = (
-        alt.Chart(df)
+        alt.Chart(norm_df)
         .mark_line(color="#1f77b4")
         .encode(
             x=alt.X("z:Q", title="z", scale=alt.Scale(domain=[x_left, x_right])),
             y=alt.Y("pdf:Q", title="Standard normal density"),
         )
     )
-    rule = (
-        alt.Chart(pd.DataFrame({"z": [z_obs]}))
-        .mark_rule(color="#ff7f0e", strokeWidth=2)
-        .encode(x="z:Q")
+    # Use same dataset for the rule layer to avoid unnamed dataset refs in Vega
+    rule = alt.Chart(norm_df).mark_rule(color="#ff7f0e", strokeWidth=2).encode(
+        x=alt.datum(z_obs)
     )
     chart = (line + rule).properties(height=220)
     st.altair_chart(chart, use_container_width=True)
@@ -721,7 +730,7 @@ return set(G_t)
 
 
     # Build the chart from CSV data and style for dark background
-    csv_path = os.path.join(os.path.dirname(__file__), "graph_data.csv")
+    csv_path = os.path.join(os.path.dirname(__file__), "graph_data_b1.csv")
     try:
         df = pd.read_csv(csv_path)
 
@@ -767,83 +776,118 @@ return set(G_t)
     except Exception as e:
         st.error(f"Failed to render graph: {e}")
 
-with reflection_tab:
-    st.subheader("Technical reflections")
+    st.divider()
+
+    st.subheader("Spoof Attack Replication Alternative Setting (B0, D0)")
     st.markdown(
         """
-        - Most text watermarks bias token probabilities rather than embed robust signals in content.
-        - Paraphrasing, translation, summarization, or minor perturbations can materially reduce detection power.
-        - Purposeful attacks (scrubbing) can steer away from predicted‑green tokens to drop z‑scores below thresholds.
-        - Increasing robustness often harms quality or increases false positives; long texts help, but aren’t always available.
+        Setup notes:
+        - Dimensions: **B0** (no true base responses), **D0** (no detector access).
+        - Approach: approximate the base distribution with an auxiliary model to learn the surrogate scorer, then decode with a small spoofing bias.
+
+        The graph mirrors the B1,D0 view but uses results from the B0,D0 experiment.
+        """
+    )
+
+    # Build the chart from B0 CSV data (same schema)
+    csv_path_b0 = os.path.join(os.path.dirname(__file__), "graph_data_b0.csv")
+    try:
+        df_b0 = pd.read_csv(csv_path_b0)
+
+        base_b0 = alt.Chart(df_b0).encode(
+            x=alt.X("limit_samples:Q", title="Number of samples", scale=alt.Scale(type="log")),
+            y=alt.Y("success_rate:Q", title="FPR", axis=alt.Axis(format="%")),
+            color=alt.Color("delta_att:N", title="δ"),
+            tooltip=[
+                alt.Tooltip("limit_samples:Q", title="Samples"),
+                alt.Tooltip("success_rate:Q", title="Success", format=".1%"),
+                alt.Tooltip("z_avg:Q", title="Avg. z", format=".2f"),
+                alt.Tooltip("delta_att:N", title="δ"),
+            ],
+        )
+
+        line_b0 = base_b0.mark_line(interpolate="monotone")
+
+        labels_b0 = (
+            base_b0.transform_joinaggregate(max_limit="max(limit_samples)", groupby=["delta_att"])  # type: ignore
+            .transform_filter("datum.limit_samples == datum.max_limit")
+            .transform_calculate(label='"δ = " + toString(datum.delta_att)')
+            .mark_text(align="left", dx=6, dy=0, fontSize=12)
+            .encode(text=alt.Text("label:N"), color=alt.Color("delta_att:N", legend=None))
+        )
+
+        chart_b0 = (
+            (line_b0 + labels_b0)
+            .configure_view(strokeWidth=0)
+            .configure_axis(
+                grid=True,
+                gridColor="#333333",
+                domainColor="#666666",
+                tickColor="#666666",
+                labelColor="#FFFFFF",
+                titleColor="#FFFFFF",
+            )
+            .configure_legend(labelColor="#FFFFFF", titleColor="#FFFFFF")
+            .configure_title(color="#FFFFFF")
+        )
+
+        st.altair_chart(chart_b0, use_container_width=True)
+    except Exception as e:
+        st.error(f"Failed to render B0 graph: {e}")
+
+with reflection_tab:
+    st.subheader("Conclusion (Technical)")
+    st.markdown(
+        """
+        **What this replication demonstrates**
+        - **Surrogates are inexpensive and useful.** A clipped likelihood-ratio scorer trained from base vs. watermarked samples
+          can approximate the hidden green/red partition well enough to **spoof** (push $z$ above threshold).
+        - **Defensive tuning has costs.** Larger $\\delta$, stricter decoding, and chunk aggregation improve detection but
+          degrade fluency and raise false positives.
+
+        **Why the attack works (intuition)**
+        - KG-style schemes bias a rotating subset of tokens; learning *relative changes* $p_w/p_b$ is enough to steer sampling
+          towards likely-green tokens without knowing the key.
         """
     )
 
     st.divider()
 
-    st.subheader("Where Text Watermarking Appears in Policy/Practice")
-
-    with st.expander("United States", expanded=False):
-        st.markdown(
+    st.subheader("What worked vs. what broke")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.success(
             """
-            - **Executive Order 14110 (Oct 2023):** Defines *watermarking* and *synthetic content* (including **text**) and directs Commerce/NIST to develop guidance for content authentication and labeling. It **does not mandate** text watermarking but establishes it as a technique federal agencies should evaluate.
-            - **NIST guidance (2024):** Discusses watermarking for text alongside cryptographic signing and metadata; emphasizes **measurement of robustness**, false-positive risks, and using **multi-method provenance** rather than relying on watermarking alone.
-            - **US legislative proposals (e.g., AI Labeling Act; DEEPFAKES Accountability Act):** Primarily target image/audio/video. Some language is broad (“AI-generated content”), but **there is no enacted US law that mandates text watermarking**.
+            **Worked**
+            - Lightweight surrogate $s(\\text{ctx}, t)$ lifted detector $z$ reliably in spoofing.
+            - Results transferred across prompts reasonably well.
+            - Using a **different auxiliary model** in the B0/D0 setting still produced effective surrogates,
+            showing that attackers don’t need the true base model to succeed.
+            """
+        )
+    with c2:
+        st.warning(
+            """
+            **Broke / Fragile**
+            - For larger windows (e.g. $w=3$), the surrogate required a much larger dataset; this
+            made the attack infeasible to replicate fully within this project’s scope.
+            - Higher $\\delta$ makes spoofing more successful, but can degrade quality.
+            - Low-entropy sequences reduces the signal available for both watermark detection and surrogate-based attacks,
+            limiting effectiveness on both sides.
             """
         )
 
-    with st.expander("China", expanded=False):
-        st.markdown(
-            """
-            - **Deep Synthesis Provisions (in force Jan 2023):** Apply to **synthetic text** as well as images/audio/video and require providers to include identifiers; **implicit identifiers (digital watermarks)** are recognized.
-            - **Measures for Labeling of AI-Generated Content (2024–2025 rulemaking):** Reinforce that both **explicit labels** and **implicit watermarks** are acceptable compliance paths for text and non-text outputs.
-            """
-        )
-
-    with st.expander("European Union", expanded=False):
-        st.markdown(
-            """
-            - **AI Act (final text 2024/2025):**
-            - **Deployers** must disclose when presenting deepfake content (mainly image/audio/video scenarios).
-            - **Providers of systems that generate synthetic content — including text — must ensure outputs are “marked in a machine-readable, detectable manner.”** The Act is **technology-neutral**; **watermarking is one way** (not the only way) to comply with this obligation.
-            """
-        )
-
-    with st.expander("Private Sector", expanded=False):
-        st.markdown(
-            """
-            - **Google DeepMind — SynthID-Text (2023→2024):** A research-backed text watermarking approach (peer-reviewed) positioned for practical use; part of Google’s broader provenance strategy. Independent studies have begun probing robustness.
-            - **OpenAI:** Investigated text watermarking (2022–2023) but has **not deployed** a text watermarking tool in production due to robustness/usability concerns; the prior AI-text classifier was retired for low accuracy.
-            - **Major platforms (YouTube, Meta, TikTok):** Operational labeling relies mostly on **provenance standards (e.g., C2PA/Content Credentials)** for images/audio/video. **There is little platform-level reliance on text watermarks** in enforcement today.
-            """
-        )
-
-    with st.expander("International & Soft-Law Frameworks", expanded=False):
-        st.markdown(
-            """
-            - **G7 Hiroshima Process (2023):** Encourages identification of AI-generated content and cites **watermarking** among practical tools (implicitly includes text).
-            - **Singapore — Model AI Governance Framework for GenAI (2024):** Recommends provenance methods including **digital watermarking and cryptographic credentials**; technology-neutral and applicable to text.
-            - **India — MeitY advisories (2024):** Urge labeling and embedding **persistent identifiers/metadata** for synthetic **text, audio, visual, and audiovisual** content; functionally aligned with watermarking.
-            """
-        )
-
-    with st.expander("Key technical caveats for LLM/text watermarking", expanded=False):
-        st.markdown(
-            """
-            - **Fragile under paraphrase/translation/editing:** Small changes can substantially degrade detectability.
-            - **Adversarial removals:** Simple perturbations can evade many schemes.
-            - **Trade-offs:** Increasing robustness often hurts model utility or raises false-positive risk.
-            - **Practical implication:** Use **multi-layer provenance** (signing/metadata + watermarking + disclosure UX) rather than relying on text watermarks alone.
-            """
-        )
+    st.info("Bottom line: statistical text watermarking is fragile under data-driven extraction. Treat it as auxiliary, not primary, provenance.")
 
     st.divider()
 
-    st.subheader("Takeaways")
+    st.subheader("Open technical questions")
+
     st.markdown(
         """
-        - **Fragile under paraphrase/translation/editing:** Small changes can substantially degrade detectability.
-        - **Adversarial removals:** Simple perturbations can evade many schemes.
-        - **Trade-offs:** Increasing robustness often hurts model utility or raises false-positive risk.
-        - **Practical implication:** Use **multi-layer provenance** (signing/metadata + watermarking + disclosure UX) rather than relying on text watermarks alone.
+        - Can we design text-native signals that survive paraphrase without major utility loss?
+        - What are realistic attacker query budgets in deployed systems?
+        - How well do surrogates transfer across model scales and instruction-tuning variants?
+        - What detection thresholds control false positives at Internet scale?
         """
     )
